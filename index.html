@@ -875,6 +875,51 @@ $('saveClose').onclick=()=>{$('saveMenu').hidden=true;};
 $('saveGpx').onclick=()=>saveRec('gpx');
 $('saveKml').onclick=()=>saveRec('kml');
 
+/* ============ Mémorisation des fichiers importés (IndexedDB) ============ */
+const newId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+let dbp=null;
+function db(){
+  if(!dbp)dbp=new Promise((res,rej)=>{
+    try{
+      const q=indexedDB.open('guidegpx',1);
+      q.onupgradeneeded=()=>q.result.createObjectStore('routes',{keyPath:'id'});
+      q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error);
+    }catch(e){rej(e);}
+  });
+  return dbp;
+}
+async function dbDo(mode,fn){
+  const d=await db();
+  return new Promise((res,rej)=>{
+    const tx=d.transaction('routes',mode),rq=fn(tx.objectStore('routes'));
+    tx.oncomplete=()=>res(rq&&rq.result);tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error);
+  });
+}
+function putRoute(r){
+  if(!r.src)return;
+  dbDo('readwrite',s=>s.put({id:r.id,fname:r.src.fname,text:r.src.text,color:r.color,order:Date.now()}))
+    .catch(()=>toast('Ce fichier ne peut pas être mémorisé : il faudra le rouvrir au prochain lancement.',6000));
+}
+function delRoute(id){if(id)dbDo('readwrite',s=>s.delete(id)).catch(()=>{});}
+function rememberActive(){try{localStorage.setItem('guidegpx.active',(R&&R.id)||'');}catch(e){}}
+async function restoreRoutes(){
+  try{
+    if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
+    const all=await dbDo('readonly',s=>s.getAll());
+    if(!all||!all.length||st.guiding)return;
+    all.sort((a,b)=>a.order-b.order);
+    let act='';try{act=localStorage.getItem('guidegpx.active')||'';}catch(e){}
+    let n=0;
+    for(const e of all){
+      if(routes.length>=MAXR)break;
+      if(routes.some(q=>q.id===e.id))continue;
+      try{const r=parseTrack(e.text,e.fname);r.id=e.id;r.src={text:e.text,fname:e.fname};if(addRoute(r,e.color))n++;}
+      catch(err){delRoute(e.id);}
+    }
+    const i=routes.findIndex(q=>q.id===act);if(i>0)activate(i);
+    if(n)toast(n+' fichier'+(n>1?'s':'')+' rechargé'+(n>1?'s':'')+'.',3500);
+  }catch(e){}
+}
 function renderChips(){
   const box=$('routes');box.textContent='';
   routes.forEach((q,i)=>{
@@ -886,26 +931,26 @@ function renderChips(){
     c.append(b,x);box.appendChild(c);
   });
 }
-function addRoute(r){
+function addRoute(r,pref){
   if(routes.length>=MAXR){toast('3 fichiers au maximum : retirez-en un d’abord.',5000);return false;}
-  r.color=COLORS.find(c=>!routes.some(x=>x.color===c));
+  r.color=(pref&&COLORS.includes(pref)&&!routes.some(x=>x.color===pref))?pref:COLORS.find(c=>!routes.some(x=>x.color===c));
   routes.push(r);
   if(!R){R=r;st=fresh();mk.on=false;}
   if(!st.guiding)app.className='pret';
-  fitRoute();renderChips();updateHud();updateTools();kick();
+  fitRoute();renderChips();updateHud();updateTools();kick();rememberActive();
   return true;
 }
 function activate(i){
   const r=routes[i];if(st.guiding||!r||r===R)return;
   R=r;st=fresh();mk.on=false;
-  renderChips();updateHud();kick();
+  renderChips();updateHud();kick();rememberActive();
 }
 function removeRoute(i){
   const r=routes[i];if(st.guiding||!r)return;
-  routes.splice(i,1);
+  routes.splice(i,1);delRoute(r.id);
   if(R===r){R=routes[0]||null;st=fresh();mk.on=false;}
   if(!R)app.className='vide';else fitRoute();
-  renderChips();updateHud();updateTools();kick();
+  renderChips();updateHud();updateTools();kick();rememberActive();
 }
 async function loadFiles(list){
   if(st.guiding){toast('Arrêtez le guidage avant d’ajouter un fichier.');return;}
@@ -914,8 +959,9 @@ async function loadFiles(list){
     if(routes.length>=MAXR){skipped++;continue;}
     if(/\.kmz$/i.test(f.name)){msgs.push(f.name+' : KMZ non pris en charge, exportez en KML.');continue;}
     try{
-      const r=parseTrack(await f.text(),f.name);
-      if(addRoute(r))msgs.push(r.name+' : '+fmtKm(r.total)+', '+(r.mans.length-1)+' virage'+(r.mans.length>2?'s':''));
+      const text=await f.text(),r=parseTrack(text,f.name);
+      r.id=newId();r.src={text,fname:f.name};
+      if(addRoute(r)){putRoute(r);msgs.push(r.name+' : '+fmtKm(r.total)+', '+(r.mans.length-1)+' virage'+(r.mans.length>2?'s':''));}
     }catch(err){msgs.push(f.name+' : '+(err.message||'fichier illisible'));}
   }
   if(skipped)msgs.push('3 fichiers au maximum : '+skipped+' ignoré'+(skipped>1?'s':'')+'.');
@@ -1065,7 +1111,7 @@ document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{
 
 window.addEventListener('resize',resize);
 darkMQ.addEventListener&&darkMQ.addEventListener('change',()=>kick());
-resize();updateTools();
+resize();updateTools();restoreRoutes();
 window.__guide={get st(){return st;},get R(){return R;},get rec(){return rec;},get routes(){return routes;},get markers(){return markers;},
   onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack,loadFiles,activate,removeRoute,addMarker,
   toScreen:(la,lo)=>{const S=256*Math.pow(2,zoomDisp);return w2s(mercX(lo),mercY(la),S,cam.mx*S,cam.my*S,anchorY());}};  // pratique pour déboguer
