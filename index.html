@@ -446,13 +446,16 @@ function announce(f){
   const ms=R.mans;
   while(st.nextI<ms.length-1&&ms[st.nextI].s<st.prog-15)st.nextI++;
   const m=ms[st.nextI],d=m.s-st.prog,v=Math.max(st.speed,5);
-  const far=Math.min(1000,Math.max(250,v*30)),near=Math.min(300,Math.max(100,v*12)),now=Math.min(80,Math.max(30,v*3.5));
+  const now=Math.min(50,Math.max(25,v*2.5));        // « tournez » : juste avant le virage
   if(m.kind==='arrive'){
     if(d<25){st.done=true;speak('Vous êtes arrivé à destination.',true);clearTimeout(doneTimer);doneTimer=setTimeout(()=>stopGuiding(true),6000);return;}
   }
   if(d<=now&&m.said<3&&m.kind!=='arrive'){m.said=3;speak(cap1(phrase(m))+'.',true);}
-  else if(d<=near&&m.said<2){m.said=2;speak('Dans '+voiceDist(d)+', '+phrase(m)+'.');}
-  else if(d<=far&&m.said<1){m.said=1;speak('Dans '+voiceDist(d)+', '+phrase(m)+'.');}
+  else if(d<=110&&m.said<2){                          // rappel à 100 m (distance réelle si le virage suit de près le précédent)
+    m.said=2;
+    const dd=d>=85?'100 mètres':Math.max(20,Math.round(d/10)*10)+' mètres';
+    speak('Dans '+dd+', '+phrase(m)+'.');
+  }
   for(const w of R.wpts){
     if(!w.said&&w.s!=null&&st.prog>=w.s-60&&st.prog<=w.s+40){w.said=true;speak(w.name+'.');}
   }
