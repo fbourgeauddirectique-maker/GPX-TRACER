@@ -53,17 +53,24 @@ button,.btn{font:inherit;cursor:pointer}
 #sheet{position:fixed;z-index:5;left:0;right:0;bottom:0;background:var(--feuille);color:var(--texte);
   border-radius:20px 20px 0 0;padding:12px 14px calc(8px + env(safe-area-inset-bottom));
   box-shadow:0 -6px 24px rgba(0,0,0,.22)}
-#stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;text-align:center}
+#stats{display:grid;grid-template-columns:1.5fr 1fr 1fr .8fr;gap:6px;margin-bottom:10px;text-align:center}
 #stats b{display:block;font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
 #stats span{font-size:12px;color:var(--discret)}
+#stats #sRest{font-size:27px;font-weight:800;line-height:1.05}
 .primary{display:flex;align-items:center;justify-content:center;width:100%;height:52px;border:0;border-radius:13px;
   background:var(--action);color:#fff;font-size:17px;font-weight:700}
 #btnStart.stop{background:#b3261e}
 .sec{display:flex;gap:8px;margin-top:8px}
 .sec>*{flex:1;height:42px;border:1px solid var(--bord);border-radius:10px;background:transparent;color:var(--texte);
-  font-size:14px;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 6px}
+  font-size:13px;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 4px}
 #credit{font-size:10px;color:var(--discret);text-align:center;margin-top:6px}
 #file{display:none}
+#saveMenu{position:fixed;inset:0;z-index:9;background:rgba(5,15,35,.5);display:flex;align-items:flex-end}
+#saveMenu .box{width:100%;background:var(--feuille);color:var(--texte);border-radius:20px 20px 0 0;
+  padding:16px 14px calc(12px + env(safe-area-inset-bottom))}
+#saveMenu p{margin:0 0 12px;font-weight:600}
+#saveMenu .primary{margin-bottom:8px}
+.ghost{width:100%;height:44px;border:0;background:transparent;color:var(--action);font-size:15px;font-weight:600}
 
 #welcome{position:fixed;inset:0;z-index:6;display:flex;flex-direction:column;background:var(--fond);
   padding:calc(24px + env(safe-area-inset-top)) 24px calc(24px + env(safe-area-inset-bottom))}
@@ -112,8 +119,8 @@ button,.btn{font:inherit;cursor:pointer}
       <circle cx="340" cy="50" r="9" fill="#14213d" stroke="#fff" stroke-width="4"/>
     </svg>
     <h1>Guide GPX</h1>
-    <p>Chargez une trace GPX : la carte vous suit sur le tracé et annonce chaque changement de direction à la voix.</p>
-    <label class="primary" for="file">Ouvrir un fichier GPX</label>
+    <p>Chargez une trace GPX ou KML : la carte vous suit sur le tracé, annonce chaque changement de direction à la voix et enregistre le trajet réellement parcouru.</p>
+    <label class="primary" for="file">Ouvrir un fichier GPX ou KML</label>
     <button class="link" id="btnDemo">Essayer avec un tracé fictif</button>
   </section>
 
@@ -126,13 +133,22 @@ button,.btn{font:inherit;cursor:pointer}
     </div>
     <button class="primary" id="btnStart">Démarrer le guidage</button>
     <div class="sec">
-      <label class="btn hors-guidage" for="file">Ouvrir un GPX</label>
+      <label class="btn hors-guidage" for="file">Ouvrir un fichier</label>
       <button id="btnVoice">Voix activée</button>
+      <button id="btnSave" hidden>Sauvegarder</button>
       <button id="btnSim" class="hors-guidage">Simuler</button>
       <button id="btnSpeed" hidden>Vitesse ×1</button>
     </div>
     <div id="credit">Fond de carte © contributeurs OpenStreetMap</div>
   </footer>
+  <div id="saveMenu" hidden>
+    <div class="box">
+      <p id="saveInfo"></p>
+      <button class="primary" id="saveGpx">Fichier GPX</button>
+      <button class="primary" id="saveKml">Fichier KML</button>
+      <button class="ghost" id="saveClose">Fermer</button>
+    </div>
+  </div>
   <input type="file" id="file">
 </div>
 
@@ -158,9 +174,38 @@ const mercY=la=>{const s=Math.sin(la*rad);return 0.5-Math.log((1+s)/(1-s))/(4*Ma
 /* ============ Trace ============ */
 let R=null;   // route chargée
 
-function parseGPX(text,fileName){
+function parseTrack(text,fileName){
   const doc=new DOMParser().parseFromString(text,'application/xml');
-  if(doc.querySelector('parsererror')) throw new Error('Fichier GPX illisible.');
+  if(doc.querySelector('parsererror')) throw new Error('Fichier illisible (GPX ou KML attendu).');
+  if(doc.documentElement.localName.toLowerCase()==='kml') return parseKML(doc,fileName);
+  return parseGPXDoc(doc,fileName);
+}
+function parseKML(doc,fileName){
+  const raw=[],wpts=[];
+  const ok=(la,lo)=>isFinite(la)&&isFinite(lo)&&Math.abs(la)<=90&&Math.abs(lo)<=180;
+  doc.querySelectorAll('LineString > coordinates').forEach(e=>{
+    e.textContent.replace(/\s*,\s*/g,',').trim().split(/\s+/).forEach(c=>{
+      const p=c.split(','),lo=parseFloat(p[0]),la=parseFloat(p[1]);if(ok(la,lo))raw.push([la,lo]);});
+  });
+  if(raw.length<2){            // parcours au format gx:Track (« lon lat alt » séparés par des espaces)
+    raw.length=0;
+    doc.querySelectorAll('coord').forEach(e=>{
+      const p=e.textContent.trim().split(/\s+/),lo=parseFloat(p[0]),la=parseFloat(p[1]);if(ok(la,lo))raw.push([la,lo]);});
+  }
+  if(raw.length<2) throw new Error('Aucune ligne ou parcours trouvé dans ce fichier KML.');
+  doc.querySelectorAll('Placemark').forEach(pm=>{
+    const c=pm.querySelector('Point > coordinates'),n=pm.querySelector('name');
+    if(c&&n&&n.textContent.trim()){
+      const p=c.textContent.trim().split(','),lo=parseFloat(p[0]),la=parseFloat(p[1]);
+      if(ok(la,lo))wpts.push({lat:la,lon:lo,name:n.textContent.trim()});
+    }
+  });
+  const ls=doc.querySelector('LineString, Track'),pm=ls&&ls.closest('Placemark');
+  const nm=(pm&&pm.querySelector('name'))||doc.querySelector('Document > name')||doc.querySelector('name');
+  const name=(nm&&nm.textContent.trim())||(fileName||'Itinéraire').replace(/\.[^.]+$/,'');
+  return buildRoute(raw,name,wpts);
+}
+function parseGPXDoc(doc,fileName){
   const read=sel=>{const out=[];doc.querySelectorAll(sel).forEach(e=>{
     const la=parseFloat(e.getAttribute('lat')),lo=parseFloat(e.getAttribute('lon'));
     if(isFinite(la)&&isFinite(lo)) out.push([la,lo]);});return out;};
@@ -320,11 +365,22 @@ function label(m){
 
 /* ============ État de guidage ============ */
 const fresh=()=>({guiding:false,sim:false,prog:0,lastI:-1,off:false,offN:0,backN:0,nextI:0,fix:null,lastFix:null,refFix:null,
-  speed:0,ema:0,hdg:0,hasHdg:false,done:false,lastOffSay:0,first:true,offDist:0,nearest:null});
+  speed:0,ema:0,hdg:0,hasHdg:false,done:false,lastOffSay:0,first:true,offDist:0,nearest:null,nearS:0,mile:null});
 let st=fresh();
 let follow=true,autoZoom=true,headingUp=true,showTiles=true;
 let wakeLock=null,watchId=null,simTimer=0,doneTimer=0;
 const sim={s:0,mult:1};
+let rec;
+const recReset=()=>{rec={lat:[],lon:[],mx:[],my:[],t:[],n:0,dist:0,saved:false,sim:false};};recReset();
+function canDiscard(){return rec.n<2||rec.saved||confirm('Le trajet enregistré n’a pas été sauvegardé. L’effacer ?');}
+function recordFix(f){
+  if(f.acc!=null&&f.acc>50)return;
+  const n=rec.n;
+  if(n){const d=hav(rec.lat[n-1],rec.lon[n-1],f.lat,f.lon);if(d<4)return;rec.dist+=d;}
+  rec.lat.push(f.lat);rec.lon.push(f.lon);rec.mx.push(mercX(f.lon));rec.my.push(mercY(f.lat));
+  rec.t.push(f.t||Date.now());rec.n++;rec.saved=false;
+  if(rec.n===2)updateTools();
+}
 
 function recalcNext(reset){
   const ms=R.mans;let i=0;
@@ -346,6 +402,7 @@ function onFix(f){
   else if(ref&&hav(ref.lat,ref.lon,f.lat,f.lon)>8){st.hdg=brg(ref.lat,ref.lon,f.lat,f.lon);st.hasHdg=true;}
   if(!ref||hav(ref.lat,ref.lon,f.lat,f.lon)>8)st.refFix=f;
   st.lastFix=f;st.fix=f;
+  if(st.guiding)recordFix(f);
 
   let tla=f.lat,tlo=f.lon;
   if(R){
@@ -361,7 +418,7 @@ function onFix(f){
       st.offN=0;st.backN++;
       if(st.off&&st.backN>=2){st.off=false;speak('De retour sur l’itinéraire.');recalcNext(false);}
     }else{
-      st.nearest={lat:p[0],lon:p[1]};st.offDist=r.d;
+      st.nearest={lat:p[0],lon:p[1]};st.offDist=r.d;st.nearS=r.s;
       st.offN++;st.backN=0;
       if(!st.off&&(st.offN>=3||st.first)){
         st.off=true;st.lastOffSay=Date.now();
@@ -380,6 +437,12 @@ function onFix(f){
 
 function announce(f){
   if(st.off||st.done)return;
+  const rem=R.total-st.prog;                      // point kilométrique vocal tous les 5 km
+  if(st.mile==null)st.mile=Math.floor(rem/5000)*5000;
+  else if(st.mile>0&&rem<=st.mile){
+    speak('Il reste '+(st.mile/1000)+' kilomètres.');
+    st.mile=Math.min(st.mile-5000,Math.floor(rem/5000)*5000);
+  }
   const ms=R.mans;
   while(st.nextI<ms.length-1&&ms[st.nextI].s<st.prog-15)st.nextI++;
   const m=ms[st.nextI],d=m.s-st.prog,v=Math.max(st.speed,5);
@@ -438,7 +501,7 @@ function updateHud(){
 }
 function renderStats(){
   if(!R)return;
-  const rem=Math.max(0,R.total-st.prog),sp=st.ema>2?st.ema:11.1,sec=rem/sp;
+  const rem=Math.max(0,(st.off&&st.nearest)?R.total-st.nearS+st.offDist:R.total-st.prog),sp=st.ema>2?st.ema:11.1,sec=rem/sp;
   $('sRest').textContent=fmtKm(rem);
   $('sDur').textContent=fmtDur(sec);
   $('sEta').textContent=new Date(Date.now()+sec*1000).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
@@ -454,6 +517,8 @@ document.addEventListener('visibilitychange',()=>{if(st.guiding&&document.visibi
 function startGuiding(simulate){
   if(!R)return;
   stopGuiding(true,true);
+  if(!canDiscard())return;
+  recReset();rec.sim=!!simulate;
   st=fresh();st.guiding=true;st.sim=!!simulate;
   R.mans.forEach(m=>{m.said=0;});R.wpts.forEach(w=>{w.said=false;});
   mk.on=false;follow=true;autoZoom=true;
@@ -485,7 +550,7 @@ function stopGuiding(keepSpeech,silentRefit){
   app.className='pret';
   $('btnStart').textContent='Démarrer le guidage';$('btnStart').classList.remove('stop');
   $('btnSpeed').hidden=true;
-  if(was&&!silentRefit)fitRoute();
+  if(was&&!silentRefit){fitRoute();if(rec.n>1&&!rec.saved)toast('Trajet terminé : touchez Sauvegarder pour l’enregistrer.',7000);}
   updateHud();updateTools();kick();
 }
 function simTick(){
@@ -516,7 +581,9 @@ function resize(){
 }
 function fitRoute(){
   if(!R)return;
-  const [x0,y0,x1,y1]=R.bbox,dx=Math.max(x1-x0,1e-7),dy=Math.max(y1-y0,1e-7);
+  let [x0,y0,x1,y1]=R.bbox;
+  for(let i=0;i<rec.n;i++){if(rec.mx[i]<x0)x0=rec.mx[i];if(rec.mx[i]>x1)x1=rec.mx[i];if(rec.my[i]<y0)y0=rec.my[i];if(rec.my[i]>y1)y1=rec.my[i];}
+  const dx=Math.max(x1-x0,1e-7),dy=Math.max(y1-y0,1e-7);
   cam.mx=(x0+x1)/2;cam.my=(y0+y1)/2;
   const z=Math.log2(Math.min((vw*0.82)/(dx*256),(vh*0.42)/(dy*256)));
   zoomT=zoomDisp=Math.max(2,Math.min(17.5,z));
@@ -583,8 +650,7 @@ function drawTiles(S,cx,cy,ay){
   }
 }
 
-function pathRange(a,b,pre,post,S,cx,cy,lim){
-  const MX=R.mx,MY=R.my;
+function pathRange(a,b,pre,post,S,cx,cy,lim,MX=R.mx,MY=R.my){
   ctx.beginPath();
   let have=false,px=0,py=0,pen=false;
   const add=(x,y,force)=>{
@@ -625,6 +691,10 @@ function draw(){
       pathRange(st.lastI+1,R.N-1,snapPt,null,S,cx,cy,lim);ctx.strokeStyle='#d6007f';ctx.lineWidth=6;ctx.stroke();
     }else{
       pathRange(0,R.N-1,null,null,S,cx,cy,lim);ctx.strokeStyle='#d6007f';ctx.lineWidth=6;ctx.stroke();
+    }
+    if(rec.n>1){                                    // trajet réellement parcouru, même hors itinéraire
+      pathRange(0,rec.n-1,null,null,S,cx,cy,lim,rec.mx,rec.my);ctx.strokeStyle='#ffffff';ctx.lineWidth=8;ctx.stroke();
+      pathRange(0,rec.n-1,null,null,S,cx,cy,lim,rec.mx,rec.my);ctx.strokeStyle='#00a3e0';ctx.lineWidth=4;ctx.stroke();
     }
     for(const w of R.wpts)dot(mercX(w.lon)*S-cx,mercY(w.lat)*S-cy,6,'#ffcc00','#14213d',2.5);
     dot(R.mx[0]*S-cx,R.my[0]*S-cy,8,'#1b9e5a','#fff',3.5);
@@ -679,6 +749,7 @@ function updateTools(){
   $('rot').textContent=headingUp?'Cap':'Nord';$('rot').setAttribute('aria-pressed',headingUp);
   $('tiles').setAttribute('aria-pressed',showTiles);$('credit').hidden=!showTiles;
   $('recenter').hidden=!(st.guiding&&!follow);
+  $('btnSave').hidden=!(rec&&rec.n>1);
   $('btnVoice').textContent=voiceOn?'Voix activée':'Voix coupée';
 }
 $('zin').onclick=()=>zoomBy(0.7);
@@ -692,19 +763,61 @@ $('btnSim').onclick=()=>startGuiding(true);
 $('btnSpeed').onclick=()=>{sim.mult=sim.mult>=8?1:sim.mult*2;$('btnSpeed').textContent='Vitesse ×'+sim.mult;};
 if(!hasTTS){$('btnVoice').hidden=true;}
 
+/* ============ Sauvegarde du trajet parcouru ============ */
+const esc=s=>String(s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+const recName=()=>(rec.sim?'Trajet simulé':'Trajet réalisé')+(R?' – '+R.name:'');
+function buildRecGPX(){
+  let o='<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Guide GPX" xmlns="http://www.topografix.com/GPX/1/1">\n'
+   +'<metadata><name>'+esc(recName())+'</name><time>'+new Date(rec.t[0]).toISOString()+'</time></metadata>\n'
+   +'<trk><name>'+esc(recName())+'</name><trkseg>\n';
+  for(let i=0;i<rec.n;i++)o+='<trkpt lat="'+rec.lat[i].toFixed(7)+'" lon="'+rec.lon[i].toFixed(7)+'"><time>'+new Date(rec.t[i]).toISOString()+'</time></trkpt>\n';
+  return o+'</trkseg></trk>\n</gpx>\n';
+}
+function buildRecKML(){
+  let c='';for(let i=0;i<rec.n;i++)c+=rec.lon[i].toFixed(7)+','+rec.lat[i].toFixed(7)+',0 ';
+  return '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>'+esc(recName())+'</name>\n'
+   +'<Placemark><name>'+esc(recName())+'</name><Style><LineStyle><color>ffe0a300</color><width>4</width></LineStyle></Style>'
+   +'<LineString><tessellate>1</tessellate><coordinates>'+c.trim()+'</coordinates></LineString></Placemark></Document></kml>\n';
+}
+function download(blob,fname,done){
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fname;
+  document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},4000);done();
+}
+function saveRec(kind){
+  if(rec.n<2)return;
+  const d=new Date(rec.t[0]||Date.now()),p2=n=>String(n).padStart(2,'0');
+  const fname='trajet-'+d.getFullYear()+p2(d.getMonth()+1)+p2(d.getDate())+'-'+p2(d.getHours())+p2(d.getMinutes())+'.'+kind;
+  const mime=kind==='gpx'?'application/gpx+xml':'application/vnd.google-earth.kml+xml';
+  const blob=new Blob([kind==='gpx'?buildRecGPX():buildRecKML()],{type:mime});
+  const file=typeof File==='function'?new File([blob],fname,{type:mime}):null;
+  const done=()=>{rec.saved=true;$('saveMenu').hidden=true;toast('Trajet sauvegardé : '+fname);};
+  if(file&&navigator.canShare&&navigator.canShare({files:[file]})){      // feuille de partage (Fichiers, AirDrop…)
+    navigator.share({files:[file],title:fname}).then(done).catch(e=>{if(!e||e.name!=='AbortError')download(blob,fname,done);});
+    return;
+  }
+  download(blob,fname,done);
+}
+$('btnSave').onclick=()=>{$('saveInfo').textContent='Trajet enregistré : '+fmtKm(rec.dist)+(rec.sim?' (simulation)':'');$('saveMenu').hidden=false;};
+$('saveClose').onclick=()=>{$('saveMenu').hidden=true;};
+$('saveGpx').onclick=()=>saveRec('gpx');
+$('saveKml').onclick=()=>saveRec('kml');
+
 function setRoute(r,msg){
   stopGuiding(true,true);
+  recReset();
   R=r;app.className='pret';
   fitRoute();updateHud();updateTools();kick();
   if(msg)toast(msg);
 }
 function loadText(text,name){
-  try{const r=parseGPX(text,name);setRoute(r,fmtKm(r.total)+', '+(r.mans.length-1)+' changement'+(r.mans.length>2?'s':'')+' de direction détecté'+(r.mans.length>2?'s':''));}
+  if(!canDiscard())return;
+  try{const r=parseTrack(text,name);setRoute(r,fmtKm(r.total)+', '+(r.mans.length-1)+' changement'+(r.mans.length>2?'s':'')+' de direction détecté'+(r.mans.length>2?'s':''));}
   catch(err){toast(err.message||'Impossible de lire ce fichier.',6000);}
 }
 $('file').addEventListener('change',async e=>{
   const f=e.target.files&&e.target.files[0];if(!f)return;
-  try{loadText(await f.text(),f.name);}catch(err){toast('Impossible de lire ce fichier.',6000);}
+  if(/\.kmz$/i.test(f.name))toast('Les fichiers KMZ ne sont pas pris en charge : exportez le parcours en KML.',7000);
+  else try{loadText(await f.text(),f.name);}catch(err){toast('Impossible de lire ce fichier.',6000);}
   e.target.value='';
 });
 window.addEventListener('dragover',e=>e.preventDefault());
@@ -712,6 +825,7 @@ window.addEventListener('drop',async e=>{e.preventDefault();const f=e.dataTransf
 
 /* Tracé fictif pour tester les annonces sans fichier (ne suit pas de vraies routes) */
 $('btnDemo').onclick=()=>{
+  if(!canDiscard())return;
   const lat0=45.6484,lon0=0.1562,pts=[[0,0],[0,450],[380,450],[380,180],[700,180],[700,650],[320,650],[375,800],[500,1050]];
   const raw=[];
   for(let i=0;i<pts.length-1;i++){
@@ -727,7 +841,7 @@ $('btnDemo').onclick=()=>{
 window.addEventListener('resize',resize);
 darkMQ.addEventListener&&darkMQ.addEventListener('change',()=>kick());
 resize();updateTools();
-window.__guide={get st(){return st;},get R(){return R;},onFix,startGuiding,stopGuiding};  // pratique pour déboguer
+window.__guide={get st(){return st;},get R(){return R;},get rec(){return rec;},onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack};  // pratique pour déboguer
 })();
 </script>
 </body>
