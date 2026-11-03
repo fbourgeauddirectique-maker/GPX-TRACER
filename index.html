@@ -172,7 +172,7 @@ a.primary{text-decoration:none}
       <button id="btnSim" class="hors-guidage">Simuler</button>
       <button id="btnSpeed" hidden>Vitesse ×1</button>
     </div>
-    <div id="credit">Fond de carte © contributeurs OpenStreetMap · Guide GPX v9 (3 nov.)</div>
+    <div id="credit">Fond de carte © contributeurs OpenStreetMap · Guide GPX v10 (3 nov.)</div>
     </div></div>
   </footer>
   <div id="saveMenu" class="overlay" hidden>
@@ -206,6 +206,7 @@ a.primary{text-decoration:none}
       <p>Ronds-points</p>
       <pre id="rbReport"></pre>
       <button class="primary" id="rbRetry">Relancer la recherche</button>
+      <button class="primary alt" id="rbPing">Tester la connexion</button>
       <button class="primary alt" id="rbCopy">Copier le rapport</button>
       <button class="ghost" id="rbClose">Fermer</button>
     </div>
@@ -971,8 +972,9 @@ async function restoreRoutes(){
   }catch(e){}
 }
 /* ============ Ronds-points (OpenStreetMap, via Overpass) ============ */
-const RB_V=1,RB_MARGIN=14,APP_V='v9 (3 nov.)';let RB_HEDGE=6000;let rbFailAt=0;
-const OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
+const RB_V=1,RB_MARGIN=14,APP_V='v10 (3 nov.)';let RB_HEDGE=4000,RB_DEADLINE=120000,RB_TMO=25000,RB_PING_MS=12000,rbPingRes=null;const rbLog=[];let rbFailAt=0;
+const OVERPASS=['https://overpass-api.de/api/interpreter','https://z.overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
 const DRIVE=new Set(['motorway','motorway_link','trunk','trunk_link','primary','primary_link','secondary','secondary_link',
   'tertiary','tertiary_link','unclassified','residential','living_street','service','road','track']);
 function drivable(t){
@@ -1120,7 +1122,9 @@ function applyRings(route,rings){
   return pass.length;
 }
 /* Un serveur est interrogé ; si aucune réponse au bout de RB_HEDGE ms (ou en cas d'échec), le suivant est lancé
-   en parallèle. La première bonne réponse l'emporte. */
+   en parallèle. La première bonne réponse l'emporte. Chaque tentative est consignée pour le rapport. */
+const hostOf=u=>{try{return new URL(u).host;}catch(e){return u;}};
+function logAttempt(host,ms,res){rbLog.push({host,ms,res});if(rbLog.length>16)rbLog.shift();}
 function overpass(q){
   return new Promise((resolve,reject)=>{
     const started=new Set(),acs=[],timers=[];let fin=false,failed=0,lastErr=null;
@@ -1134,23 +1138,43 @@ function overpass(q){
     const start=i=>{
       if(fin||i>=OVERPASS.length||started.has(i))return;
       started.add(i);
+      const host=hostOf(OVERPASS[i]),t0=Date.now();let timedOut=false;
+      const failWith=e=>{
+        const why=fin?'annulée (réponse obtenue ailleurs)':timedOut?'délai dépassé ('+Math.round(RB_TMO/1000)+' s)':String((e&&e.message)||e).slice(0,60);
+        logAttempt(host,Date.now()-t0,why);
+        onFail(timedOut?new Error('délai dépassé ('+Math.round(RB_TMO/1000)+' s)'):e);
+      };
       try{
         const ac=new AbortController();acs.push(ac);
-        timers.push(setTimeout(()=>{try{ac.abort();}catch(e){}},25000));
+        timers.push(setTimeout(()=>{timedOut=true;try{ac.abort();}catch(e){}},RB_TMO));
         fetch(OVERPASS[i],{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
           body:'data='+encodeURIComponent(q),signal:ac.signal})
           .then(res=>{if(!res.ok)throw new Error('HTTP '+res.status);return res.json();})
           .then(j=>{
             if(!j||!Array.isArray(j.elements))throw new Error('réponse invalide');
             if(j.remark&&/runtime error|timed out|rate_limited/i.test(j.remark))throw new Error(String(j.remark).slice(0,60));
-            if(!fin){stop();resolve(j);}
+            if(!fin){logAttempt(host,Date.now()-t0,'OK');stop();resolve(j);}
           })
-          .catch(onFail);
-      }catch(e){onFail(e);}
+          .catch(failWith);
+      }catch(e){failWith(e);}
       if(i+1<OVERPASS.length)timers.push(setTimeout(()=>start(i+1),RB_HEDGE));
     };
     start(0);
   });
+}
+/* Test de connexion : une requête minuscule vers chaque serveur, en parallèle */
+async function rbPing(){
+  const lines=await Promise.all(OVERPASS.map(async url=>{
+    const host=hostOf(url),t0=Date.now();let timedOut=false;
+    try{
+      const ac=new AbortController(),tm=setTimeout(()=>{timedOut=true;ac.abort();},RB_PING_MS);
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+        body:'data='+encodeURIComponent('[out:json][timeout:10];node(1);out;'),signal:ac.signal});
+      await res.text();clearTimeout(tm);
+      return host+' : '+(res.ok?'OK':'HTTP '+res.status)+' en '+(Date.now()-t0)+' ms';
+    }catch(e){return host+' : '+(timedOut?'délai dépassé ('+Math.round(RB_PING_MS/1000)+' s)':String((e&&e.message)||e).slice(0,50))+' ('+(Date.now()-t0)+' ms)';}
+  }));
+  return lines;
 }
 /* Zones rectangulaires (rapides côté serveur) le long du tracé : un rectangle tous les ~2 km, marge 70 m */
 function rbBoxes(rt){
@@ -1166,34 +1190,64 @@ function rbBoxes(rt){
   }
   return boxes;
 }
-function rbQuery(boxes){
+/* Étape 1 : uniquement la géométrie des ronds-points des zones (requête très légère) */
+function rbQuery1(boxes){
   const f=b=>b.map(v=>v.toFixed(5)).join(',');
-  return '[out:json][timeout:25];\n(\n'+boxes.map(b=>'way["junction"="roundabout"]('+f(b)+');').join('\n')+'\n)->.r1;\n'
-   +'node(w.r1)->.n1;way(bn.n1)["junction"="roundabout"]->.r2;(.r1;.r2;)->.s2;\n'
-   +'node(w.s2)->.n2;way(bn.n2)["junction"="roundabout"]->.r3;(.s2;.r3;)->.rr;\n'
-   +'node(w.rr)->.rn;way(bn.rn)["highway"]->.a;(.a; - .rr;)->.o;\n'
-   +'.rr out geom;\n.o out body;';
+  return '[out:json][timeout:25];\n(\n'+boxes.map(b=>'way["junction"="roundabout"]('+f(b)+');').join('\n')+'\n);\nout geom;';
 }
-async function fetchRings(rt,onProg){
-  const boxes=rbBoxes(rt),batches=[];
-  for(let i=0;i<boxes.length;i+=15)batches.push(boxes.slice(i,i+15));
-  const els=[],t0=Date.now();let bad=0,lastErr=null,done=0,next=0;
-  if(onProg)onProg(0,batches.length,null);
+/* Étape 2 : branches et sens de circulation, seulement pour les ronds-points traversés par le tracé */
+function rbQuery2(ids){
+  return '[out:json][timeout:25];\n'
+   +'node(id:'+ids.join(',')+')->.rn;\n'
+   +'way(bn.rn)["junction"="roundabout"]->.rg;\n'
+   +'node(w.rg)->.rn2;way(bn.rn2)["highway"]->.a;(.a; - .rg;)->.o;\n'
+   +'.rg out geom;\n.o out body;';
+}
+function rbRouteCells(rt){                                    // grille d'environ 55 m des points du tracé (un point tous les 25 m)
+  const set=new Set(),K=0.0005,key=(a,b)=>a+'_'+b;
+  for(let s=0;s<=rt.total;s+=25){const q=posAt(rt,s);set.add(key(Math.floor(q[0]/K),Math.floor(q[1]/K)));}
+  set.add(key(Math.floor(rt.lat[rt.N-1]/K),Math.floor(rt.lon[rt.N-1]/K)));
+  return {has:(la,lo)=>{const a=Math.floor(la/K),b=Math.floor(lo/K);
+    for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++)if(set.has(key(a+i,b+j)))return true;return false;}};
+}
+async function runBatches(list,mk,t0,onEach){
+  const els=[];let bad=0,lastErr=null,next=0,done=0;
   const worker=async()=>{
-    while(next<batches.length){
-      if(Date.now()-t0>90000)break;                    // délai global : on garde ce qu'on a
-      const bt=batches[next++];
-      try{const j=await overpass(rbQuery(bt));for(const e of j.elements)els.push(e);}
+    while(next<list.length){
+      if(Date.now()-t0>RB_DEADLINE)break;                  // délai global : on garde ce qu'on a
+      const item=list[next++];
+      try{const j=await overpass(mk(item));for(const e of j.elements)els.push(e);}
       catch(e){bad++;lastErr=e;}
-      done++;
-      if(onProg)onProg(done,batches.length,osmRings(els));
+      done++;if(onEach)onEach(done,els);
     }
   };
-  await Promise.all([worker(),worker()]);                // 2 requêtes en parallèle
-  const skipped=batches.length-next;
+  await Promise.all([worker(),worker()]);                  // 2 requêtes en parallèle
+  const skipped=list.length-next;
   if(skipped>0){bad+=skipped;lastErr=lastErr||new Error('délai dépassé');}
-  if(!batches.length||bad>=batches.length)throw lastErr||new Error('réseau');
-  return {rings:osmRings(els),bad,total:batches.length,msg:lastErr?String(lastErr.message||lastErr).slice(0,70):''};
+  return {els,bad,lastErr};
+}
+async function fetchRings(rt,onProg){
+  const t0=Date.now(),boxes=rbBoxes(rt),b1=[];
+  for(let i=0;i<boxes.length;i+=15)b1.push(boxes.slice(i,i+15));
+  if(onProg)onProg(0,b1.length,null,'zones');
+  const r1=await runBatches(b1,rbQuery1,t0,(d)=>{if(onProg)onProg(d,b1.length,null,'zones');});
+  if(!b1.length||r1.bad>=b1.length)throw r1.lastErr||new Error('réseau');
+  const cells=rbRouteCells(rt),seen=new Set(),ringWays=[];
+  for(const e of r1.els){
+    if(e.type!=='way'||seen.has(e.id)||!e.tags||e.tags.junction!=='roundabout'||!e.geometry||!e.nodes)continue;
+    seen.add(e.id);
+    if(e.geometry.some(g=>cells.has(g.lat,g.lon)))ringWays.push(e);       // seulement ceux que le tracé touche
+  }
+  const msg1=r1.lastErr?String(r1.lastErr.message||r1.lastErr).slice(0,70):'';
+  if(!ringWays.length)return {rings:[],bad:r1.bad,total:b1.length,msg:msg1};
+  const b2=[];let cur=[];
+  for(const w of ringWays){cur.push(...w.nodes);if(cur.length>400){b2.push([...new Set(cur)]);cur=[];}}
+  if(cur.length)b2.push([...new Set(cur)]);
+  if(onProg)onProg(0,b2.length,null,'détails');
+  const r2=await runBatches(b2,rbQuery2,t0,(d,els)=>{if(onProg)onProg(d,b2.length,osmRings(els),'détails');});
+  if(r2.bad>=b2.length)throw r2.lastErr||new Error('réseau');
+  const last=r2.lastErr||r1.lastErr;
+  return {rings:osmRings(r2.els),bad:r1.bad+r2.bad,total:b1.length+b2.length,msg:last?String(last.message||last).slice(0,70):''};
 }
 function saveOsm(rt){
   if(!rt.id)return;
@@ -1204,7 +1258,7 @@ function saveOsm(rt){
 }
 function rbLine(rt){
   const b=rt&&rt.rb;if(!b||!b.state)return '';
-  if(b.state==='loading')return ' · ronds-points : recherche'+(b.total?' '+b.done+'/'+b.total:'')+(b.used?' ('+b.used+' repéré'+(b.used>1?'s':'')+')':'')+'…';
+  if(b.state==='loading')return ' · ronds-points : recherche'+(b.total?' ('+(b.step||'zones')+' '+b.done+'/'+b.total+')':'')+(b.used?' · '+b.used+' repéré'+(b.used>1?'s':''):'')+'…';
   if(b.state==='error')return ' · ronds-points : indisponibles';
   const u=b.used||0;
   return ' · '+(u?u+' rond-point'+(u>1?'s':'')+' avec sortie annoncée':'aucun rond-point exploitable')+(b.state==='partial'?' (recherche incomplète)':'');
@@ -1217,9 +1271,9 @@ async function rbStart(rt,quiet){
   rt.rb=Object.assign(rt.rb||{},{state:'loading',msg:'',found:0,used:0,bad:0,total:0,done:0,cache:false});
   refreshRb(rt);
   try{
-    const res=await fetchRings(rt,(done,total,rings)=>{
+    const res=await fetchRings(rt,(done,total,rings,step)=>{
       if(!routes.includes(rt))return;
-      rt.rb.done=done;rt.rb.total=total;
+      rt.rb.done=done;rt.rb.total=total;rt.rb.step=step;
       if(rings&&!st.guiding){rt.rb.found=rings.length;rt.rb.used=applyRings(rt,rings);}     // résultats au fur et à mesure (pas pendant un guidage)
       refreshRb(rt);
     });
@@ -1243,7 +1297,7 @@ async function rbStart(rt,quiet){
 function rbReport(rt){
   if(!rt)return 'Aucun tracé chargé.';
   const b=rt.rb||{},L=['Guide GPX '+APP_V,'Tracé : '+rt.name+' ('+fmtKm(rt.total)+', '+rt.N+' points)'];
-  const lab={loading:'recherche en cours ('+(b.done||0)+'/'+(b.total||'?')+')…',error:'ÉCHEC : '+(b.msg||'inconnu'),
+  const lab={loading:'recherche en cours ('+(b.step||'zones')+' '+(b.done||0)+'/'+(b.total||'?')+')…',error:'ÉCHEC : '+(b.msg||'inconnu'),
     ok:'terminée'+(b.cache?' (données mémorisées)':''),partial:'INCOMPLÈTE ('+b.bad+'/'+b.total+' requêtes en échec : '+(b.msg||'?')+')'};
   L.push('Recherche : '+(b.state?lab[b.state]:'pas encore lancée'));
   if(b.state==='ok'||b.state==='partial'){
@@ -1257,11 +1311,21 @@ function rbReport(rt){
       g.rej.forEach(q=>L.push('   ✘ à '+fmtKm(q.s)+' : '+q.why));
     });
   }
+  L.push('');
+  L.push('Navigateur : '+String(navigator.userAgent||'?').slice(0,100)+' · '+(navigator.onLine===false?'HORS LIGNE':'en ligne'));
+  if(rbPingRes){L.push('Test de connexion ('+rbPingRes.when+') :');rbPingRes.lines.forEach(x=>L.push('  '+x));}
+  if(rbLog.length){L.push('Dernières requêtes :');rbLog.slice(-10).forEach(a=>L.push('  '+a.host+' · '+(a.ms/1000).toFixed(1)+' s · '+a.res));}
   return L.join('\n');
 }
 function renderRbSheet(){$('rbReport').textContent=rbReport(R);}
 $('btnRb').onclick=()=>{renderRbSheet();$('rbSheet').hidden=false;};
 $('rbClose').onclick=()=>{$('rbSheet').hidden=true;};
+$('rbPing').onclick=async()=>{
+  const b=$('rbPing');b.disabled=true;b.textContent='Test en cours (12 s max)…';
+  const lines=await rbPing();
+  rbPingRes={when:new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}),lines};
+  b.disabled=false;b.textContent='Tester la connexion';renderRbSheet();
+};
 $('rbRetry').onclick=()=>{if(!R)return;R.osm=null;saveOsm(R);rbStart(R,false);};
 $('rbCopy').onclick=async()=>{
   const txt=rbReport(R);
@@ -1472,7 +1536,7 @@ window.addEventListener('resize',resize);
 darkMQ.addEventListener&&darkMQ.addEventListener('change',()=>kick());
 resize();updateTools();restoreRoutes();
 window.__guide={get st(){return st;},get R(){return R;},get rec(){return rec;},get routes(){return routes;},get markers(){return markers;},
-  rb:{osmRings,applyRings,rbPassages,rbReport,rbStart,rbBoxes,rbQuery,setHedge:v=>{RB_HEDGE=v;}},onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack,loadFiles,activate,removeRoute,addMarker,
+  rb:{osmRings,applyRings,rbPassages,rbReport,rbStart,rbBoxes,rbQuery1,rbQuery2,rbPing,setHedge:v=>{RB_HEDGE=v;},setTimeouts:(a,b)=>{RB_TMO=a;RB_PING_MS=b;}},onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack,loadFiles,activate,removeRoute,addMarker,
   toScreen:(la,lo)=>{const S=256*Math.pow(2,zoomDisp);return w2s(mercX(lo),mercY(la),S,cam.mx*S,cam.my*S,anchorY());}};  // pratique pour déboguer
 })();
 </script>
