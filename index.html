@@ -82,6 +82,7 @@ button,.btn{font:inherit;cursor:pointer}
 a.primary{text-decoration:none}
 .primary.alt{background:transparent;color:var(--action);border:2px solid var(--action)}
 #mkInfo{white-space:pre-line;color:var(--discret);font-size:14px;margin:0 0 14px}
+#rbReport{white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,Menlo,monospace;color:var(--discret);max-height:38vh;overflow:auto;margin:0 0 12px;-webkit-user-select:text;user-select:text}
 .place{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;min-height:48px;padding:0 12px;margin-bottom:6px;
   border:1px solid var(--bord);border-radius:10px;background:transparent;color:var(--texte);font-size:16px;text-align:left}
 .place .dist{flex:none;color:var(--discret);font-size:13px}
@@ -166,11 +167,12 @@ a.primary{text-decoration:none}
       <label class="btn hors-guidage" for="file">Ajouter un fichier</label>
       <button id="btnVoice">Voix activée</button>
       <button id="btnPlaces">Lieux</button>
+      <button id="btnRb" class="hors-guidage">Ronds-points</button>
       <button id="btnSave" hidden>Sauvegarder</button>
       <button id="btnSim" class="hors-guidage">Simuler</button>
       <button id="btnSpeed" hidden>Vitesse ×1</button>
     </div>
-    <div id="credit">Fond de carte © contributeurs OpenStreetMap</div>
+    <div id="credit">Fond de carte © contributeurs OpenStreetMap · Guide GPX v8 (3 nov.)</div>
     </div></div>
   </footer>
   <div id="saveMenu" class="overlay" hidden>
@@ -197,6 +199,15 @@ a.primary{text-decoration:none}
       <div id="placesList"></div>
       <button class="primary alt" id="placesExport" hidden>Exporter en GPX</button>
       <button class="ghost" id="placesClose">Fermer</button>
+    </div>
+  </div>
+  <div id="rbSheet" class="overlay" hidden>
+    <div class="box">
+      <p>Ronds-points</p>
+      <pre id="rbReport"></pre>
+      <button class="primary" id="rbRetry">Relancer la recherche</button>
+      <button class="primary alt" id="rbCopy">Copier le rapport</button>
+      <button class="ghost" id="rbClose">Fermer</button>
     </div>
   </div>
   <input type="file" id="file" multiple>
@@ -542,7 +553,7 @@ function updateHud(){
   hud.hidden=false;
   if(!st.guiding){
     const n=R.mans.length-1;
-    setHud(icon('straight'),fmtKm(R.total),R.name,n+(n>1?' changements de direction':' changement de direction'),false);return;
+    setHud(icon('straight'),fmtKm(R.total),R.name,n+(n>1?' changements de direction':' changement de direction')+rbLine(R),false);return;
   }
   if(!st.fix){setHud(icon('straight'),'','Recherche du signal GPS…','',false);return;}
   if(st.done){setHud(icon('arrive'),'','Vous êtes arrivé','',false);return;}
@@ -952,7 +963,7 @@ async function restoreRoutes(){
     for(const e of all){
       if(routes.length>=MAXR)break;
       if(routes.some(q=>q.id===e.id))continue;
-      try{const r=parseTrack(e.text,e.fname);r.id=e.id;r.src={text:e.text,fname:e.fname};if(addRoute(r,e.color)){n++;if(e.osm&&e.osm.v===RB_V){r.osm=e.osm;applyRings(r,e.osm.rings);}else rbStart(r,true);}}
+      try{const r=parseTrack(e.text,e.fname);r.id=e.id;r.src={text:e.text,fname:e.fname};if(addRoute(r,e.color)){n++;if(e.osm&&e.osm.v===RB_V){r.osm=e.osm;const u=applyRings(r,e.osm.rings);r.rb=Object.assign(r.rb||{},{state:'ok',cache:true,found:e.osm.rings.length,used:u});refreshRb(r);}else rbStart(r,true);}}
       catch(err){delRoute(e.id);}
     }
     const i=routes.findIndex(q=>q.id===act);if(i>0)activate(i);
@@ -960,8 +971,8 @@ async function restoreRoutes(){
   }catch(e){}
 }
 /* ============ Ronds-points (OpenStreetMap, via Overpass) ============ */
-const RB_V=1,RB_MARGIN=10;let rbFailAt=0;
-const OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+const RB_V=1,RB_MARGIN=14,APP_V='v8 (3 nov.)';let rbFailAt=0;
+const OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
 const DRIVE=new Set(['motorway','motorway_link','trunk','trunk_link','primary','primary_link','secondary','secondary_link',
   'tertiary','tertiary_link','unclassified','residential','living_street','service','road','track']);
 function drivable(t){
@@ -1034,9 +1045,10 @@ function posAt(rt,s){
   const t=rt.segLen[lo]>0?Math.min(1,Math.max(0,(s-rt.cum[lo])/rt.segLen[lo])):0;
   return [rt.lat[lo]+(rt.lat[lo+1]-rt.lat[lo])*t,rt.lon[lo]+(rt.lon[lo+1]-rt.lon[lo])*t];
 }
-/* Passages de la route dans un rond-point : entrée, sortie, numéro de sortie à prendre */
+/* Passages de la route dans un rond-point : entrée, sortie, numéro de sortie à prendre.
+   Le tableau renvoyé porte aussi .log (passages refusés + raison) et .minD (distance tracé-centre) */
 function rbPassages(rt,ring){
-  const res=[],c=ring.c,cf=Math.cos(c[0]*rad),Rz=ring.r+RB_MARGIN;
+  const res=[],log=[],c=ring.c,cf=Math.cos(c[0]*rad),Rz=ring.r+RB_MARGIN;
   const X=lo=>(lo-c[1])*cf*MD,Y=la=>(la-c[0])*MD;
   const rp=ring.p.map(q=>[X(q[1]),Y(q[0])]),n=rp.length;
   const dRing=(x,y)=>{
@@ -1049,29 +1061,32 @@ function rbPassages(rt,ring){
     return best;
   };
   const nearest=(pt,bit)=>{
-    const x=X(pt[1]),y=Y(pt[0]);let bi=-1,bd=40;
+    const x=X(pt[1]),y=Y(pt[0]);let bi=-1,bd=55;
     for(let i=0;i<n;i++){if(!(ring.p[i][2]&bit))continue;const d=Math.hypot(rp[i][0]-x,rp[i][1]-y);if(d<bd){bd=d;bi=i;}}
     return bi;
   };
   const fin=ps=>{
-    const len=ps.out.s-ps.in.s;
-    if(len<3||len>1000)return;
+    const at=ps.in.s,len=ps.out.s-ps.in.s,no0=why=>{log.push({s:at,why});};
+    if(len<3){no0('passage trop court dans la zone ('+Math.round(len)+' m)');return;}
+    if(len>1000){no0('passage trop long dans la zone ('+Math.round(len)+' m)');return;}
     let near=0,tot=0;                                     // la route suit-elle vraiment l'anneau ?
-    for(let s=ps.in.s;s<=ps.out.s;s+=2){const q=posAt(rt,s);tot++;if(dRing(X(q[1]),Y(q[0]))<=9)near++;}
-    if(tot<2||near/tot<0.25)return;
+    for(let s=ps.in.s;s<=ps.out.s;s+=2){const q=posAt(rt,s);tot++;if(dRing(X(q[1]),Y(q[0]))<=16)near++;}
+    if(tot<2||near/tot<0.2){no0('le tracé ne suit pas l’anneau ('+Math.round(100*near/Math.max(1,tot))+' % des points à moins de 16 m)');return;}
     const e=nearest([ps.in.lat,ps.in.lon],2),x=nearest([ps.out.lat,ps.out.lon],1);
-    if(e<0||x<0)return;
-    let cnt=0,no=0,total=0;
+    if(e<0){no0('aucune branche d’entrée utilisable à moins de 55 m du point d’entrée');return;}
+    if(x<0){no0('aucune branche de sortie utilisable à moins de 55 m du point de sortie');return;}
+    let cnt=0,no=0;
     for(let k=1;k<=n;k++){if(ring.p[(e+k)%n][2]&1){cnt++;if((e+k)%n===x&&!no)no=cnt;}}
-    total=cnt;
-    if(!no)return;
-    res.push({s:ps.in.s,s2:ps.out.s,lat:ps.in.lat,lon:ps.in.lon,exit:no,total});
+    if(!no){no0('sortie introuvable sur l’anneau');return;}
+    res.push({s:ps.in.s,s2:ps.out.s,lat:ps.in.lat,lon:ps.in.lon,exit:no,total:cnt});
   };
-  let cur=null;
+  let cur=null,minD=1e9;
   for(let i=0;i<rt.N-1;i++){
     const ax=X(rt.lon[i]),ay=Y(rt.lat[i]),bx=X(rt.lon[i+1]),by=Y(rt.lat[i+1]),L=rt.segLen[i];
-    if(!cur&&ax*ax+ay*ay>(Rz+L)*(Rz+L))continue;
     const dx=bx-ax,dy=by-ay,a=dx*dx+dy*dy;
+    let t=a>1e-9?-(ax*dx+ay*dy)/a:0;t=t<0?0:t>1?1:t;
+    const dm=Math.hypot(ax+t*dx,ay+t*dy);if(dm<minD)minD=dm;
+    if(!cur&&dm>Rz)continue;
     const pos=u=>({s:rt.cum[i]+u*L,lat:rt.lat[i]+(rt.lat[i+1]-rt.lat[i])*u,lon:rt.lon[i]+(rt.lon[i+1]-rt.lon[i])*u});
     let u0=1,u1=0;
     if(a>1e-9){
@@ -1082,17 +1097,24 @@ function rbPassages(rt,ring){
     if(!cur)cur=(u0===0&&ax*ax+ay*ay<Rz*Rz)?{bad:true}:{in:pos(u0)};      // route qui démarre dans le rond-point : ignoré
     if(u1<1){if(!cur.bad){cur.out=pos(u1);fin(cur);}cur=null;}
   }
+  res.log=log;res.minD=minD;
   return res;
 }
 function applyRings(route,rings){
-  const pass=[];
-  for(const rg of rings)for(const q of rbPassages(route,rg))pass.push(q);
+  const pass=[],descr=[];
+  for(const rg of rings){
+    const ps=rbPassages(route,rg);
+    descr.push({c:rg.c,r:rg.r,n:rg.p.length,ex:rg.p.filter(q=>q[2]&1).length,en:rg.p.filter(q=>q[2]&2).length,minD:ps.minD,
+      pass:ps.map(q=>({s:q.s,exit:q.exit,total:q.total})),rej:ps.log});
+    for(const q of ps)pass.push(q);
+  }
   pass.sort((a,b)=>a.s-b.s);
   const base=route.turns||route.mans;route.turns=base;
   const keep=base.filter(m=>m.kind==='arrive'||!pass.some(q=>m.s>=q.s-15&&m.s<=q.s2+15));   // les « virages » dans l'anneau disparaissent
   const rb=pass.map(q=>({s:q.s,s2:q.s2,lat:q.lat,lon:q.lon,angle:0,kind:'rond',side:'',exit:q.exit,total:q.total,said:0}));
   route.mans=keep.concat(rb).sort((a,b)=>a.s-b.s);
   route.rbCount=pass.length;
+  route.rb=route.rb||{};route.rb.rings=descr.sort((a,b)=>a.minD-b.minD);
   if(st.guiding&&R===route)recalcNext(true);
   kick();
   return pass.length;
@@ -1109,7 +1131,7 @@ async function overpass(q){
       if(!res.ok)throw new Error('HTTP '+res.status);
       const j=await res.json();
       if(!j||!Array.isArray(j.elements))throw new Error('réponse invalide');
-      if(j.remark&&/runtime error|timed out/i.test(j.remark))throw new Error(j.remark);
+      if(j.remark&&/runtime error|timed out|rate_limited/i.test(j.remark))throw new Error(String(j.remark).slice(0,60));
       return j;
     }catch(e){clearTimeout(tm);err=e;}
   }
@@ -1133,31 +1155,85 @@ async function fetchRings(rt){
     if(acc>12000&&i<rt.N-1){chunks.push(cur);cur=[q];acc=0;}
   }
   if(cur.length>1)chunks.push(cur);
-  const els=[];
-  for(const ch of chunks){
-    const j=await overpass(rbQuery(ch.map(q=>q[0].toFixed(5)+','+q[1].toFixed(5)).join(',')));
-    for(const e of j.elements)els.push(e);
+  const els=[];let bad=0,lastErr=null;
+  for(let ci=0;ci<chunks.length;ci++){
+    if(ci)await new Promise(r=>setTimeout(r,250));
+    try{
+      const j=await overpass(rbQuery(chunks[ci].map(q=>q[0].toFixed(5)+','+q[1].toFixed(5)).join(',')));
+      for(const e of j.elements)els.push(e);
+    }catch(e){bad++;lastErr=e;}
   }
-  return osmRings(els);
+  if(!chunks.length||bad===chunks.length)throw lastErr||new Error('réseau');
+  return {rings:osmRings(els),bad,total:chunks.length,msg:lastErr?String(lastErr.message||lastErr).slice(0,70):''};
 }
 function saveOsm(rt){
   if(!rt.id)return;
   db().then(d=>{
     const tx=d.transaction('routes','readwrite'),s=tx.objectStore('routes'),g=s.get(rt.id);
-    g.onsuccess=()=>{if(g.result){g.result.osm=rt.osm;s.put(g.result);}};
+    g.onsuccess=()=>{if(g.result){g.result.osm=rt.osm||undefined;s.put(g.result);}};
   }).catch(()=>{});
 }
+function rbLine(rt){
+  const b=rt&&rt.rb;if(!b||!b.state)return '';
+  if(b.state==='loading')return ' · ronds-points : recherche…';
+  if(b.state==='error')return ' · ronds-points : indisponibles';
+  const u=b.used||0;
+  return ' · '+(u?u+' rond-point'+(u>1?'s':'')+' avec sortie annoncée':'aucun rond-point exploitable')+(b.state==='partial'?' (recherche incomplète)':'');
+}
+function refreshRb(rt){
+  if(R===rt&&!st.guiding)updateHud();
+  if(R===rt&&!$('rbSheet').hidden)renderRbSheet();
+}
 async function rbStart(rt,quiet){
+  rt.rb=Object.assign(rt.rb||{},{state:'loading',msg:'',found:0,used:0,bad:0,total:0,cache:false});
+  refreshRb(rt);
   try{
-    const rings=await fetchRings(rt);
+    const res=await fetchRings(rt);
     if(!routes.includes(rt))return;
-    rt.osm={v:RB_V,rings};saveOsm(rt);
-    const n=applyRings(rt,rings);
-    if(!quiet&&n)toast(rt.name+' : '+n+' rond'+(n>1?'s':'')+'-point'+(n>1?'s':'')+' repéré'+(n>1?'s':'')+'. La sortie à prendre sera annoncée.',5000);
+    const n=applyRings(rt,res.rings);
+    Object.assign(rt.rb,{state:res.bad?'partial':'ok',found:res.rings.length,used:n,bad:res.bad,total:res.total,msg:res.msg});
+    if(!res.bad&&res.rings.length){rt.osm={v:RB_V,rings:res.rings};saveOsm(rt);}
+    refreshRb(rt);
+    if(!quiet){
+      if(n)toast(rt.name+' : '+n+' rond'+(n>1?'s':'')+'-point'+(n>1?'s':'')+' repéré'+(n>1?'s':'')+'. La sortie à prendre sera annoncée.',5000);
+      else if(res.rings.length)toast('Ronds-points : '+res.rings.length+' trouvé'+(res.rings.length>1?'s':'')+' dans OpenStreetMap, mais aucun n’est traversé par le tracé. Détails : bouton « Ronds-points ».',7000);
+      else toast('Aucun rond-point trouvé près de ce tracé.',4000);
+    }
   }catch(e){
-    if(!quiet&&Date.now()-rbFailAt>8000){rbFailAt=Date.now();toast('Ronds-points indisponibles (pas de réseau ?) : les virages restent annoncés normalement.',6000);}
+    if(!routes.includes(rt))return;
+    Object.assign(rt.rb,{state:'error',msg:String((e&&e.message)||e).slice(0,70)});
+    refreshRb(rt);
+    if(!quiet&&Date.now()-rbFailAt>8000){rbFailAt=Date.now();toast('Ronds-points indisponibles ('+rt.rb.msg+'). Les virages restent annoncés normalement. Détails : bouton « Ronds-points ».',7000);}
   }
 }
+function rbReport(rt){
+  if(!rt)return 'Aucun tracé chargé.';
+  const b=rt.rb||{},L=['Guide GPX '+APP_V,'Tracé : '+rt.name+' ('+fmtKm(rt.total)+', '+rt.N+' points)'];
+  const lab={loading:'recherche en cours…',error:'ÉCHEC : '+(b.msg||'inconnu'),
+    ok:'terminée'+(b.cache?' (données mémorisées)':''),partial:'INCOMPLÈTE ('+b.bad+'/'+b.total+' requêtes en échec : '+(b.msg||'?')+')'};
+  L.push('Recherche : '+(b.state?lab[b.state]:'pas encore lancée'));
+  if(b.state==='ok'||b.state==='partial'){
+    L.push('Ronds-points reçus d’OpenStreetMap : '+b.found);
+    L.push('Ronds-points traversés par le tracé : '+b.used);
+    (b.rings||[]).slice(0,10).forEach((g,i)=>{
+      L.push('');
+      L.push('#'+(i+1)+' centre '+g.c[0].toFixed(5)+', '+g.c[1].toFixed(5)+' · rayon '+Math.round(g.r)+' m · '+g.n+' nœuds · '+g.ex+' sorties et '+g.en+' entrées possibles');
+      L.push('   le tracé passe à '+Math.round(g.minD)+' m du centre');
+      g.pass.forEach(q=>L.push('   ✔ à '+fmtKm(q.s)+' : sortie '+q.exit+' sur '+q.total));
+      g.rej.forEach(q=>L.push('   ✘ à '+fmtKm(q.s)+' : '+q.why));
+    });
+  }
+  return L.join('\n');
+}
+function renderRbSheet(){$('rbReport').textContent=rbReport(R);}
+$('btnRb').onclick=()=>{renderRbSheet();$('rbSheet').hidden=false;};
+$('rbClose').onclick=()=>{$('rbSheet').hidden=true;};
+$('rbRetry').onclick=()=>{if(!R)return;R.osm=null;saveOsm(R);rbStart(R,false);};
+$('rbCopy').onclick=async()=>{
+  const txt=rbReport(R);
+  try{await navigator.clipboard.writeText(txt);toast('Rapport copié.');}
+  catch(e){const sel=window.getSelection(),rg=document.createRange();rg.selectNodeContents($('rbReport'));sel.removeAllRanges();sel.addRange(rg);toast('Rapport sélectionné : copiez-le avec le menu de l’iPhone.',5000);}
+};
 function drawRb(S,cx,cy,ay){                                      // numéro de sortie sur la carte
   if(!R||zoomDisp<13||!R.rbCount)return;
   ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='700 12px -apple-system,BlinkMacSystemFont,sans-serif';
@@ -1362,7 +1438,7 @@ window.addEventListener('resize',resize);
 darkMQ.addEventListener&&darkMQ.addEventListener('change',()=>kick());
 resize();updateTools();restoreRoutes();
 window.__guide={get st(){return st;},get R(){return R;},get rec(){return rec;},get routes(){return routes;},get markers(){return markers;},
-  rb:{osmRings,applyRings,rbPassages},onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack,loadFiles,activate,removeRoute,addMarker,
+  rb:{osmRings,applyRings,rbPassages,rbReport,rbStart},onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack,loadFiles,activate,removeRoute,addMarker,
   toScreen:(la,lo)=>{const S=256*Math.pow(2,zoomDisp);return w2s(mercX(lo),mercY(la),S,cam.mx*S,cam.my*S,anchorY());}};  // pratique pour déboguer
 })();
 </script>
