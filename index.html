@@ -291,7 +291,7 @@ function buildRoute(raw,name,wraw){
     if(i){segLen[i-1]=hav(LA[i-1],LO[i-1],LA[i],LO[i]);cum[i]=cum[i-1]+segLen[i-1];cosS[i-1]=Math.cos((LA[i-1]+LA[i])/2*rad);}
   }
   const route={name,N,lat:LA,lon:LO,cum,segLen,cosS,mx,my,total:cum[N-1],bbox:[x0,y0,x1,y1],mans:[],wpts:[]};
-  route.mans=computeMans(LA,LO,cum);
+  route.mans=computeMans(LA,LO,cum);route.turns=route.mans;
   route.wpts=(wraw||[]).map(w=>{
     const r=snapRange(route,w.lat,w.lon,0,N-1,null);
     return {lat:w.lat,lon:w.lon,name:w.name,s:r&&r.d<120?r.s:null,said:false};
@@ -379,6 +379,9 @@ function voiceDist(m){
 function fmtDur(s){const mn=Math.max(1,Math.round(s/60));if(mn<60)return mn+' min';
   const h=Math.floor(mn/60),r=mn%60;return h+' h '+String(r).padStart(2,'0');}
 const cap1=s=>s.charAt(0).toUpperCase()+s.slice(1);
+const ORDF=['','première','deuxième','troisième','quatrième','cinquième','sixième','septième','huitième','neuvième','dixième'];
+const ordF=n=>ORDF[n]||(n+'e');
+const ordS=n=>n===1?'1re':n+'e';
 const CARD=['nord','nord-est','est','sud-est','sud','sud-ouest','ouest','nord-ouest'];
 const cardinal=b=>CARD[Math.round(b/45)%8];
 
@@ -397,6 +400,7 @@ function speak(text,urgent){
 function phrase(m){
   switch(m.kind){
     case 'arrive':return 'vous arriverez à destination';
+    case 'rond':return 'au rond-point, prenez la '+ordF(m.exit)+' sortie';
     case 'uturn':return 'faites demi-tour';
     case 'slight':return 'tournez légèrement à '+m.side;
     case 'sharp':return 'tournez franchement à '+m.side;
@@ -406,6 +410,7 @@ function phrase(m){
 function label(m){
   switch(m.kind){
     case 'arrive':return 'Arrivée';
+    case 'rond':return 'Rond-point : '+ordS(m.exit)+' sortie';
     case 'uturn':return 'Demi-tour';
     case 'slight':return 'Légèrement à '+m.side;
     case 'sharp':return 'Virage serré à '+m.side;
@@ -435,7 +440,7 @@ function recordFix(f){
 
 function recalcNext(reset){
   const ms=R.mans;let i=0;
-  while(i<ms.length-1&&ms[i].s<st.prog-15)i++;
+  while(i<ms.length-1&&(ms[i].s2||ms[i].s)<st.prog-15)i++;
   st.nextI=i;
   if(reset)ms.forEach((m,k)=>{m.said=k<i?3:0;});
 }
@@ -495,7 +500,7 @@ function announce(f){
     st.mile=Math.min(st.mile-5000,Math.floor(rem/5000)*5000);
   }
   const ms=R.mans;
-  while(st.nextI<ms.length-1&&ms[st.nextI].s<st.prog-15)st.nextI++;
+  while(st.nextI<ms.length-1&&(ms[st.nextI].s2||ms[st.nextI].s)<st.prog-15)st.nextI++;
   const m=ms[st.nextI],d=m.s-st.prog,v=Math.max(st.speed,5);
   const now=Math.min(50,Math.max(25,v*2.5));        // « tournez » : juste avant le virage
   if(m.kind==='arrive'){
@@ -514,9 +519,10 @@ function announce(f){
 
 /* ============ Icônes et panneau ============ */
 const SV=b=>`<svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">${b}</g></svg>`;
-function icon(kind,ang){
+function icon(kind,ang,n){
   switch(kind){
     case 'arrive':return SV('<path d="M34 90V14"/><path d="M34 16H74L62 31L74 46H34" fill="currentColor"/>');
+    case 'rond':return `<svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="42" r="27" fill="none" stroke="currentColor" stroke-width="9"/><path d="M50 98V69" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round"/><text x="50" y="${n>9?53:55}" text-anchor="middle" font-size="${n>9?24:32}" font-weight="800" fill="currentColor" font-family="-apple-system,BlinkMacSystemFont,sans-serif">${n}</text></svg>`;
     case 'uturn':return SV('<path d="M36 92V42a14 14 0 0 1 28 0V72"/><path d="M50 60L64 76L78 60"/>');
     case 'straight':return SV('<path d="M50 92V16"/><path d="M32 34L50 16L68 34"/>');
     case 'rel':return SV(`<g transform="rotate(${ang} 50 54)"><path d="M50 84V20"/><path d="M32 38L50 20L68 38"/></g>`);
@@ -546,11 +552,14 @@ function updateHud(){
     setHud(icon('rel',Math.round(ang)),fmtHud(st.offDist),'Rejoignez l’itinéraire','Direction '+cardinal(b),true);return;
   }
   const m=R.mans[st.nextI],d=Math.max(0,m.s-st.prog);
+  if(m.kind==='rond'&&st.prog>=m.s-3){                 // dans le rond-point : on garde la consigne jusqu'à la sortie
+    setHud(icon('rond',0,m.exit),fmtHud(Math.max(0,(m.s2||m.s)-st.prog)),'Prenez la '+ordS(m.exit)+' sortie','',false);return;
+  }
   if(m.kind!=='arrive'&&d>=800){
     setHud(icon('straight'),fmtHud(d),'Continuez tout droit','Ensuite : '+phrase(m),false);
   }else{
     const ang=Math.max(-150,Math.min(150,Math.round(m.angle)));
-    setHud(icon(m.kind==='slight'||m.kind==='turn'||m.kind==='sharp'?'turn':m.kind,ang),fmtHud(d),label(m),'',false);
+    setHud(icon(m.kind==='slight'||m.kind==='turn'||m.kind==='sharp'?'turn':m.kind,ang,m.exit),fmtHud(d),label(m),'',false);
   }
 }
 function renderStats(){
@@ -779,6 +788,7 @@ function draw(){
   }
   ctx.restore();
   drawMarkers(S,cx,cy,ay);
+  drawRb(S,cx,cy,ay);
 }
 
 /* ============ Gestes ============ */
@@ -942,12 +952,222 @@ async function restoreRoutes(){
     for(const e of all){
       if(routes.length>=MAXR)break;
       if(routes.some(q=>q.id===e.id))continue;
-      try{const r=parseTrack(e.text,e.fname);r.id=e.id;r.src={text:e.text,fname:e.fname};if(addRoute(r,e.color))n++;}
+      try{const r=parseTrack(e.text,e.fname);r.id=e.id;r.src={text:e.text,fname:e.fname};if(addRoute(r,e.color)){n++;if(e.osm&&e.osm.v===RB_V){r.osm=e.osm;applyRings(r,e.osm.rings);}else rbStart(r,true);}}
       catch(err){delRoute(e.id);}
     }
     const i=routes.findIndex(q=>q.id===act);if(i>0)activate(i);
     if(n)toast(n+' fichier'+(n>1?'s':'')+' rechargé'+(n>1?'s':'')+'.',3500);
   }catch(e){}
+}
+/* ============ Ronds-points (OpenStreetMap, via Overpass) ============ */
+const RB_V=1,RB_MARGIN=10;let rbFailAt=0;
+const OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+const DRIVE=new Set(['motorway','motorway_link','trunk','trunk_link','primary','primary_link','secondary','secondary_link',
+  'tertiary','tertiary_link','unclassified','residential','living_street','service','road','track']);
+function drivable(t){
+  if(!DRIVE.has(t.highway))return false;
+  const no=v=>v==='no'||v==='private';
+  if(no(t.motor_vehicle)||no(t.vehicle)||no(t.motorcar))return false;
+  if(no(t.access)&&t.motor_vehicle!=='yes'&&t.vehicle!=='yes'&&t.motor_vehicle!=='destination')return false;
+  if(t.highway==='service'&&['driveway','parking_aisle','drive-through','emergency_access'].includes(t.service))return false;
+  return true;
+}
+function onewayOf(t){
+  const v=t.oneway;
+  if(v==='yes'||v==='true'||v==='1')return 1;
+  if(v==='-1'||v==='reverse')return -1;
+  if(v==='no')return 0;
+  if(t.junction==='roundabout'||t.highway==='motorway'||t.highway==='motorway_link')return 1;
+  return 0;
+}
+/* Éléments Overpass -> anneaux : sommets dans le sens de circulation, avec pour chacun
+   bit 1 = on peut en sortir, bit 2 = on peut y entrer (sens uniques pris en compte) */
+function osmRings(els){
+  const ways=new Map();
+  for(const e of els)if(e&&e.type==='way'&&!ways.has(e.id))ways.set(e.id,e);
+  const ring=[],others=[];
+  for(const w of ways.values()){
+    const t=w.tags||{};
+    if(t.junction==='roundabout'&&w.nodes&&w.geometry&&w.geometry.length===w.nodes.length)ring.push(w);
+    else if(w.nodes&&t.highway)others.push(w);
+  }
+  const used=new Set(),loops=[];
+  for(const w of ring){
+    if(used.has(w))continue;used.add(w);
+    const chain=[w];let cur=w,guard=0;
+    while(cur.nodes[cur.nodes.length-1]!==chain[0].nodes[0]&&guard++<12){
+      const end=cur.nodes[cur.nodes.length-1],nx=ring.find(x=>!used.has(x)&&x.nodes[0]===end);
+      if(!nx)break;used.add(nx);chain.push(nx);cur=nx;
+    }
+    if(cur.nodes[cur.nodes.length-1]!==chain[0].nodes[0])continue;          // anneau incomplet : ignoré
+    const ids=[],pts=[];
+    chain.forEach((c,ci)=>c.nodes.forEach((id,k)=>{if(ci>0&&k===0)return;ids.push(id);pts.push([c.geometry[k].lat,c.geometry[k].lon]);}));
+    ids.pop();pts.pop();
+    if(ids.length>=4)loops.push({ids,pts});
+  }
+  const need=new Set();loops.forEach(L=>L.ids.forEach(id=>need.add(id)));
+  const byNode=new Map();
+  for(const w of others)w.nodes.forEach((id,k)=>{if(!need.has(id))return;let a=byNode.get(id);if(!a)byNode.set(id,a=[]);a.push([w,k]);});
+  const out=[];
+  for(const L of loops){
+    const n=L.pts.length;
+    const cLat=L.pts.reduce((a,q)=>a+q[0],0)/n,cLon=L.pts.reduce((a,q)=>a+q[1],0)/n,cf=Math.cos(cLat*rad);
+    const r=L.pts.reduce((a,q)=>a+Math.hypot((q[0]-cLat)*MD,(q[1]-cLon)*cf*MD),0)/n;
+    if(r<4||r>130)continue;
+    const p=L.pts.map((q,i)=>{
+      let f=0;
+      for(const [w,k] of byNode.get(L.ids[i])||[]){
+        const t=w.tags||{};if(!drivable(t))continue;
+        const ow=onewayOf(t),len=w.nodes.length;
+        if(k<len-1){if(ow!==-1)f|=1;if(ow!==1)f|=2;}      // branche qui s'éloigne dans le sens des nœuds
+        if(k>0){if(ow!==1)f|=1;if(ow!==-1)f|=2;}          // branche qui s'éloigne dans le sens inverse
+      }
+      return [+q[0].toFixed(6),+q[1].toFixed(6),f];
+    });
+    out.push({c:[+cLat.toFixed(6),+cLon.toFixed(6)],r:+r.toFixed(1),p});
+  }
+  return out;
+}
+function posAt(rt,s){
+  let lo=0,hi=rt.N-2;
+  while(lo<hi){const m=(lo+hi+1)>>1;if(rt.cum[m]<=s)lo=m;else hi=m-1;}
+  const t=rt.segLen[lo]>0?Math.min(1,Math.max(0,(s-rt.cum[lo])/rt.segLen[lo])):0;
+  return [rt.lat[lo]+(rt.lat[lo+1]-rt.lat[lo])*t,rt.lon[lo]+(rt.lon[lo+1]-rt.lon[lo])*t];
+}
+/* Passages de la route dans un rond-point : entrée, sortie, numéro de sortie à prendre */
+function rbPassages(rt,ring){
+  const res=[],c=ring.c,cf=Math.cos(c[0]*rad),Rz=ring.r+RB_MARGIN;
+  const X=lo=>(lo-c[1])*cf*MD,Y=la=>(la-c[0])*MD;
+  const rp=ring.p.map(q=>[X(q[1]),Y(q[0])]),n=rp.length;
+  const dRing=(x,y)=>{
+    let best=1e9;
+    for(let i=0;i<n;i++){
+      const a=rp[i],b=rp[(i+1)%n],dx=b[0]-a[0],dy=b[1]-a[1],L2=dx*dx+dy*dy;
+      let t=L2>0?((x-a[0])*dx+(y-a[1])*dy)/L2:0;t=t<0?0:t>1?1:t;
+      const d=Math.hypot(x-a[0]-t*dx,y-a[1]-t*dy);if(d<best)best=d;
+    }
+    return best;
+  };
+  const nearest=(pt,bit)=>{
+    const x=X(pt[1]),y=Y(pt[0]);let bi=-1,bd=40;
+    for(let i=0;i<n;i++){if(!(ring.p[i][2]&bit))continue;const d=Math.hypot(rp[i][0]-x,rp[i][1]-y);if(d<bd){bd=d;bi=i;}}
+    return bi;
+  };
+  const fin=ps=>{
+    const len=ps.out.s-ps.in.s;
+    if(len<3||len>1000)return;
+    let near=0,tot=0;                                     // la route suit-elle vraiment l'anneau ?
+    for(let s=ps.in.s;s<=ps.out.s;s+=2){const q=posAt(rt,s);tot++;if(dRing(X(q[1]),Y(q[0]))<=9)near++;}
+    if(tot<2||near/tot<0.25)return;
+    const e=nearest([ps.in.lat,ps.in.lon],2),x=nearest([ps.out.lat,ps.out.lon],1);
+    if(e<0||x<0)return;
+    let cnt=0,no=0,total=0;
+    for(let k=1;k<=n;k++){if(ring.p[(e+k)%n][2]&1){cnt++;if((e+k)%n===x&&!no)no=cnt;}}
+    total=cnt;
+    if(!no)return;
+    res.push({s:ps.in.s,s2:ps.out.s,lat:ps.in.lat,lon:ps.in.lon,exit:no,total});
+  };
+  let cur=null;
+  for(let i=0;i<rt.N-1;i++){
+    const ax=X(rt.lon[i]),ay=Y(rt.lat[i]),bx=X(rt.lon[i+1]),by=Y(rt.lat[i+1]),L=rt.segLen[i];
+    if(!cur&&ax*ax+ay*ay>(Rz+L)*(Rz+L))continue;
+    const dx=bx-ax,dy=by-ay,a=dx*dx+dy*dy;
+    const pos=u=>({s:rt.cum[i]+u*L,lat:rt.lat[i]+(rt.lat[i+1]-rt.lat[i])*u,lon:rt.lon[i]+(rt.lon[i+1]-rt.lon[i])*u});
+    let u0=1,u1=0;
+    if(a>1e-9){
+      const b=2*(ax*dx+ay*dy),cc=ax*ax+ay*ay-Rz*Rz,disc=b*b-4*a*cc;
+      if(disc>=0){const sq=Math.sqrt(disc);u0=Math.max(0,(-b-sq)/(2*a));u1=Math.min(1,(-b+sq)/(2*a));}
+    }
+    if(u0>=u1){if(cur){if(!cur.bad){cur.out=pos(0);fin(cur);}cur=null;}continue;}
+    if(!cur)cur=(u0===0&&ax*ax+ay*ay<Rz*Rz)?{bad:true}:{in:pos(u0)};      // route qui démarre dans le rond-point : ignoré
+    if(u1<1){if(!cur.bad){cur.out=pos(u1);fin(cur);}cur=null;}
+  }
+  return res;
+}
+function applyRings(route,rings){
+  const pass=[];
+  for(const rg of rings)for(const q of rbPassages(route,rg))pass.push(q);
+  pass.sort((a,b)=>a.s-b.s);
+  const base=route.turns||route.mans;route.turns=base;
+  const keep=base.filter(m=>m.kind==='arrive'||!pass.some(q=>m.s>=q.s-15&&m.s<=q.s2+15));   // les « virages » dans l'anneau disparaissent
+  const rb=pass.map(q=>({s:q.s,s2:q.s2,lat:q.lat,lon:q.lon,angle:0,kind:'rond',side:'',exit:q.exit,total:q.total,said:0}));
+  route.mans=keep.concat(rb).sort((a,b)=>a.s-b.s);
+  route.rbCount=pass.length;
+  if(st.guiding&&R===route)recalcNext(true);
+  kick();
+  return pass.length;
+}
+async function overpass(q){
+  let err=null;
+  for(const url of OVERPASS){
+    let tm=0;
+    try{
+      const ac=new AbortController();tm=setTimeout(()=>ac.abort(),45000);
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+        body:'data='+encodeURIComponent(q),signal:ac.signal});
+      clearTimeout(tm);
+      if(!res.ok)throw new Error('HTTP '+res.status);
+      const j=await res.json();
+      if(!j||!Array.isArray(j.elements))throw new Error('réponse invalide');
+      if(j.remark&&/runtime error|timed out/i.test(j.remark))throw new Error(j.remark);
+      return j;
+    }catch(e){clearTimeout(tm);err=e;}
+  }
+  throw err||new Error('réseau');
+}
+function rbQuery(poly){
+  return '[out:json][timeout:40];\n'
+   +'way["junction"="roundabout"](around:45,'+poly+')->.r1;\n'
+   +'node(w.r1)->.n1;way(bn.n1)["junction"="roundabout"]->.r2;(.r1;.r2;)->.s2;\n'
+   +'node(w.s2)->.n2;way(bn.n2)["junction"="roundabout"]->.r3;(.s2;.r3;)->.rr;\n'
+   +'node(w.rr)->.rn;way(bn.rn)["highway"]->.a;(.a; - .rr;)->.o;\n'
+   +'.rr out geom;\n.o out body;';
+}
+async function fetchRings(rt){
+  const chunks=[];let cur=[],last=null,acc=0;
+  for(let i=0;i<rt.N;i++){
+    const q=[rt.lat[i],rt.lon[i]];
+    if(last&&hav(last[0],last[1],q[0],q[1])<100&&i<rt.N-1)continue;
+    if(last)acc+=hav(last[0],last[1],q[0],q[1]);
+    cur.push(q);last=q;
+    if(acc>12000&&i<rt.N-1){chunks.push(cur);cur=[q];acc=0;}
+  }
+  if(cur.length>1)chunks.push(cur);
+  const els=[];
+  for(const ch of chunks){
+    const j=await overpass(rbQuery(ch.map(q=>q[0].toFixed(5)+','+q[1].toFixed(5)).join(',')));
+    for(const e of j.elements)els.push(e);
+  }
+  return osmRings(els);
+}
+function saveOsm(rt){
+  if(!rt.id)return;
+  db().then(d=>{
+    const tx=d.transaction('routes','readwrite'),s=tx.objectStore('routes'),g=s.get(rt.id);
+    g.onsuccess=()=>{if(g.result){g.result.osm=rt.osm;s.put(g.result);}};
+  }).catch(()=>{});
+}
+async function rbStart(rt,quiet){
+  try{
+    const rings=await fetchRings(rt);
+    if(!routes.includes(rt))return;
+    rt.osm={v:RB_V,rings};saveOsm(rt);
+    const n=applyRings(rt,rings);
+    if(!quiet&&n)toast(rt.name+' : '+n+' rond'+(n>1?'s':'')+'-point'+(n>1?'s':'')+' repéré'+(n>1?'s':'')+'. La sortie à prendre sera annoncée.',5000);
+  }catch(e){
+    if(!quiet&&Date.now()-rbFailAt>8000){rbFailAt=Date.now();toast('Ronds-points indisponibles (pas de réseau ?) : les virages restent annoncés normalement.',6000);}
+  }
+}
+function drawRb(S,cx,cy,ay){                                      // numéro de sortie sur la carte
+  if(!R||zoomDisp<13||!R.rbCount)return;
+  ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='700 12px -apple-system,BlinkMacSystemFont,sans-serif';
+  for(const m of R.mans){
+    if(m.kind!=='rond')continue;
+    const [x,y]=w2s(mercX(m.lon),mercY(m.lat),S,cx,cy,ay);
+    if(x<-30||x>vw+30||y<-30||y>vh+30)continue;
+    dot(x,y,11,'#ffffff',R.color,3);ctx.fillStyle='#14213d';ctx.fillText(String(m.exit),x,y+0.5);
+  }
+  ctx.textBaseline='alphabetic';
 }
 function renderChips(){
   const box=$('routes');box.textContent='';
@@ -990,7 +1210,7 @@ async function loadFiles(list){
     try{
       const text=await f.text(),r=parseTrack(text,f.name);
       r.id=newId();r.src={text,fname:f.name};
-      if(addRoute(r)){putRoute(r);msgs.push(r.name+' : '+fmtKm(r.total)+', '+(r.mans.length-1)+' virage'+(r.mans.length>2?'s':''));}
+      if(addRoute(r)){putRoute(r);rbStart(r);msgs.push(r.name+' : '+fmtKm(r.total)+', '+(r.mans.length-1)+' virage'+(r.mans.length>2?'s':''));}
     }catch(err){msgs.push(f.name+' : '+(err.message||'fichier illisible'));}
   }
   if(skipped)msgs.push('3 fichiers au maximum : '+skipped+' ignoré'+(skipped>1?'s':'')+'.');
@@ -1142,7 +1362,7 @@ window.addEventListener('resize',resize);
 darkMQ.addEventListener&&darkMQ.addEventListener('change',()=>kick());
 resize();updateTools();restoreRoutes();
 window.__guide={get st(){return st;},get R(){return R;},get rec(){return rec;},get routes(){return routes;},get markers(){return markers;},
-  onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack,loadFiles,activate,removeRoute,addMarker,
+  rb:{osmRings,applyRings,rbPassages},onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack,loadFiles,activate,removeRoute,addMarker,
   toScreen:(la,lo)=>{const S=256*Math.pow(2,zoomDisp);return w2s(mercX(lo),mercY(la),S,cam.mx*S,cam.my*S,anchorY());}};  // pratique pour déboguer
 })();
 </script>
