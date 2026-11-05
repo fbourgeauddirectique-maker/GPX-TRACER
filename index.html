@@ -81,14 +81,14 @@ button,.btn{font:inherit;cursor:pointer}
 .overlay .primary{margin-bottom:8px}
 a.primary{text-decoration:none}
 .primary.alt{background:transparent;color:var(--action);border:2px solid var(--action)}
-#mkInfo{white-space:pre-line;color:var(--discret);font-size:14px;margin:0 0 14px}
+#mkInfo,#tripInfo{white-space:pre-line;color:var(--discret);font-size:14px;margin:0 0 14px}
 #rbReport{white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,Menlo,monospace;color:var(--discret);max-height:38vh;overflow:auto;margin:0 0 12px;-webkit-user-select:text;user-select:text}
 .place{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;min-height:48px;padding:0 12px;margin-bottom:6px;
   border:1px solid var(--bord);border-radius:10px;background:transparent;color:var(--texte);font-size:16px;text-align:left}
 .place .dist{flex:none;color:var(--discret);font-size:13px}
 .overlay p.empty{color:var(--discret);font-weight:400}
-#routes{display:flex;gap:6px;margin-bottom:10px}
-.chip{flex:1 1 0;min-width:0;display:flex;align-items:center;border:2px solid var(--bord);border-radius:10px;overflow:hidden}
+#routes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.chip{flex:1 1 calc(33.333% - 6px);min-width:0;display:flex;align-items:center;border:2px solid var(--bord);border-radius:10px;overflow:hidden}
 .chip[aria-current="true"]{border-color:var(--c)}
 .chip .sel{flex:1;min-width:0;height:36px;display:flex;align-items:center;gap:6px;border:0;background:transparent;color:var(--texte);
   font-size:13px;padding:0 4px 0 8px;text-align:left}
@@ -146,10 +146,11 @@ a.primary{text-decoration:none}
       <circle cx="340" cy="50" r="9" fill="#14213d" stroke="#fff" stroke-width="4"/>
     </svg>
     <h1>Guide GPX</h1>
-    <p>Chargez jusqu’à 3 traces GPX ou KML, chacune dans sa couleur : la carte vous suit sur le tracé, annonce chaque changement de direction à la voix et enregistre le trajet réellement parcouru.</p>
+    <p>Chargez jusqu’à 6 traces GPX ou KML, chacune dans sa couleur : la carte vous suit sur le tracé, annonce chaque changement de direction à la voix et enregistre le trajet réellement parcouru.</p>
     <label class="primary" for="file">Ouvrir des fichiers GPX ou KML</label>
     <button class="link" id="btnDemo">Essayer avec un tracé fictif</button>
     <button class="link" id="btnPlacesW" hidden>Mes lieux enregistrés</button>
+    <button class="link" id="btnTripsW" hidden>Mes trajets réalisés</button>
   </section>
 
   <footer id="sheet">
@@ -168,11 +169,12 @@ a.primary{text-decoration:none}
       <button id="btnVoice">Voix activée</button>
       <button id="btnPlaces">Lieux</button>
       <button id="btnRb" class="hors-guidage">Ronds-points</button>
+      <button id="btnTrips" class="hors-guidage">Trajets</button>
       <button id="btnSave" hidden>Sauvegarder</button>
       <button id="btnSim" class="hors-guidage">Simuler</button>
       <button id="btnSpeed" hidden>Vitesse ×1</button>
     </div>
-    <div id="credit">Fond de carte © contributeurs OpenStreetMap · Guide GPX v10 (3 nov.)</div>
+    <div id="credit">Fond de carte © contributeurs OpenStreetMap · Guide GPX v11 (5 nov.)</div>
     </div></div>
   </footer>
   <div id="saveMenu" class="overlay" hidden>
@@ -181,6 +183,24 @@ a.primary{text-decoration:none}
       <button class="primary" id="saveGpx">Fichier GPX</button>
       <button class="primary" id="saveKml">Fichier KML</button>
       <button class="ghost" id="saveClose">Fermer</button>
+    </div>
+  </div>
+  <div id="tripsSheet" class="overlay" hidden>
+    <div class="box">
+      <p>Trajets réalisés</p>
+      <div id="tripsList"></div>
+      <button class="ghost" id="tripsHide" hidden>Masquer les trajets de la carte</button>
+      <button class="ghost" id="tripsClose">Fermer</button>
+    </div>
+  </div>
+  <div id="tripSheet" class="overlay" hidden>
+    <div class="box">
+      <p id="tripTitle"></p>
+      <div id="tripInfo"></div>
+      <button class="primary" id="tripShow">Afficher sur la carte</button>
+      <button class="primary alt" id="tripGpx">Exporter en GPX</button>
+      <button class="primary alt" id="tripKml">Exporter en KML</button>
+      <div class="sec"><button id="tripDel">Supprimer</button><button id="tripBack">Retour à la liste</button></div>
     </div>
   </div>
   <div id="mkSheet" class="overlay" hidden>
@@ -235,7 +255,8 @@ const mercY=la=>{const s=Math.sin(la*rad);return 0.5-Math.log((1+s)/(1-s))/(4*Ma
 
 /* ============ Trace ============ */
 let R=null;   // route active : celle qui sert au guidage
-const routes=[],COLORS=['#d6007f','#ef6c00','#6a1b9a'],MAXR=3;
+const routes=[],COLORS=['#d6007f','#ef6c00','#6a1b9a','#2e7d32','#c62828','#795548'],MAXR=6;
+let trips=[];const shown=new Map();      // trajets réalisés (métadonnées) et trajets affichés sur la carte
 
 function parseTrack(text,fileName){
   const doc=new DOMParser().parseFromString(text,'application/xml');
@@ -439,8 +460,8 @@ let wakeLock=null,watchId=null,simTimer=0,doneTimer=0;
 const sim={s:0,mult:1};
 let lastPos=null;
 let rec;
-const recReset=()=>{rec={lat:[],lon:[],mx:[],my:[],t:[],n:0,dist:0,saved:false,sim:false,rname:''};};recReset();
-function canDiscard(){return rec.n<2||rec.saved||confirm('Le trajet enregistré n’a pas été sauvegardé. L’effacer ?');}
+const recReset=()=>{rec={lat:[],lon:[],mx:[],my:[],t:[],n:0,dist:0,saved:false,sim:false,rname:'',id:'',rkey:'',completed:false,lastSave:0,savedN:0};};recReset();
+function canDiscard(){if(rec.n>=2)persistTrip();return true;}      // le trajet est mémorisé automatiquement : rien n'est perdu
 function recordFix(f){
   if(f.acc!=null&&f.acc>50)return;
   const n=rec.n;
@@ -448,6 +469,7 @@ function recordFix(f){
   rec.lat.push(f.lat);rec.lon.push(f.lon);rec.mx.push(mercX(f.lon));rec.my.push(mercY(f.lat));
   rec.t.push(f.t||Date.now());rec.n++;rec.saved=false;
   if(rec.n===2)updateTools();
+  if(rec.id&&(rec.n===2||(Date.now()-rec.lastSave>20000&&rec.n>rec.savedN)))persistTrip();   // enregistrement automatique toutes les 20 s
 }
 
 function recalcNext(reset){
@@ -516,7 +538,7 @@ function announce(f){
   const m=ms[st.nextI],d=m.s-st.prog,v=Math.max(st.speed,5);
   const now=Math.min(50,Math.max(25,v*2.5));        // « tournez » : juste avant le virage
   if(m.kind==='arrive'){
-    if(d<25){st.done=true;speak('Vous êtes arrivé à destination.',true);clearTimeout(doneTimer);doneTimer=setTimeout(()=>stopGuiding(true),6000);return;}
+    if(d<25){st.done=true;rec.completed=true;persistTrip();speak('Vous êtes arrivé à destination.',true);clearTimeout(doneTimer);doneTimer=setTimeout(()=>stopGuiding(true),6000);return;}
   }
   if(d<=now&&m.said<3&&m.kind!=='arrive'){m.said=3;speak(cap1(phrase(m))+'.',true);}
   else if(d<=110&&m.said<2){                          // rappel à 100 m (distance réelle si le virage suit de près le précédent)
@@ -593,7 +615,7 @@ function startGuiding(simulate){
   if(!R)return;
   stopGuiding(true,true);
   if(!canDiscard())return;
-  recReset();rec.sim=!!simulate;rec.rname=R.name;
+  recReset();rec.sim=!!simulate;rec.rname=R.name;rec.id=newId();rec.rkey=routeKey(R);
   st=fresh();st.guiding=true;st.sim=!!simulate;
   R.mans.forEach(m=>{m.said=0;});R.wpts.forEach(w=>{w.said=false;});
   mk.on=false;follow=true;autoZoom=true;
@@ -620,12 +642,13 @@ function stopGuiding(keepSpeech,silentRefit){
   if(wakeLock){try{wakeLock.release();}catch(e){}wakeLock=null;}
   if(!keepSpeech&&hasTTS)speechSynthesis.cancel();
   const was=st.guiding;
+  if(was)persistTrip();
   st=fresh();mk.on=false;
   if(!R){return;}
   app.className='pret';
   $('btnStart').textContent='Démarrer le guidage';$('btnStart').classList.remove('stop');
   $('btnSpeed').hidden=true;
-  if(was&&!silentRefit){setMin(false,false);fitRoute();if(rec.n>1&&!rec.saved)toast('Trajet terminé : touchez Sauvegarder pour l’enregistrer.',7000);}
+  if(was&&!silentRefit){setMin(false,false);fitRoute();if(rec.n>1)toast('Trajet enregistré sur l’appareil : bouton « Trajets ».',6000);}
   updateHud();updateTools();kick();
 }
 function simTick(){
@@ -787,6 +810,10 @@ function draw(){
       if(m&&m.kind!=='arrive')dot(mercX(m.lon)*S-cx,mercY(m.lat)*S-cy,9,'#ffffff',R.color,3.5);
     }
   }
+  for(const t of shown.values()){
+    pathRange(0,t.n-1,null,null,S,cx,cy,lim,t.mx,t.my);ctx.setLineDash([]);ctx.strokeStyle='#ffffff';ctx.lineWidth=7;ctx.stroke();
+    pathRange(0,t.n-1,null,null,S,cx,cy,lim,t.mx,t.my);ctx.setLineDash([10,7]);ctx.strokeStyle='#1565c0';ctx.lineWidth=4;ctx.stroke();ctx.setLineDash([]);
+  }
   if(mk.on){
     const x=mk.mx*S-cx,y=mk.my*S-cy;
     ctx.save();ctx.translate(x,y);
@@ -852,6 +879,7 @@ function updateTools(){
   $('recenter').hidden=!(st.guiding&&!follow);
   $('btnSave').hidden=!(rec&&rec.n>1);
   $('btnPlacesW').hidden=!markers.length;
+  $('btnTripsW').hidden=!trips.length;$('btnTrips').textContent='Trajets'+(trips.length?' ('+trips.length+')':'');
   $('btnPlaces').textContent='Lieux'+(markers.length?' ('+markers.length+')':'');
   $('btnVoice').textContent=voiceOn?'Voix activée':'Voix coupée';
 }
@@ -887,19 +915,21 @@ try{if(localStorage.getItem('guidegpx.min')==='1')setMin(true,false);}catch(e){}
 /* ============ Sauvegarde du trajet parcouru ============ */
 const esc=s=>String(s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 const recName=()=>(rec.sim?'Trajet simulé':'Trajet réalisé')+(rec.rname?' – '+rec.rname:'');
-function buildRecGPX(){
+function gpxOf(name,lat,lon,t,n){
   let o='<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Guide GPX" xmlns="http://www.topografix.com/GPX/1/1">\n'
-   +'<metadata><name>'+esc(recName())+'</name><time>'+new Date(rec.t[0]).toISOString()+'</time></metadata>\n'
-   +'<trk><name>'+esc(recName())+'</name><trkseg>\n';
-  for(let i=0;i<rec.n;i++)o+='<trkpt lat="'+rec.lat[i].toFixed(7)+'" lon="'+rec.lon[i].toFixed(7)+'"><time>'+new Date(rec.t[i]).toISOString()+'</time></trkpt>\n';
+   +'<metadata><name>'+esc(name)+'</name><time>'+new Date(t[0]).toISOString()+'</time></metadata>\n'
+   +'<trk><name>'+esc(name)+'</name><trkseg>\n';
+  for(let i=0;i<n;i++)o+='<trkpt lat="'+lat[i].toFixed(7)+'" lon="'+lon[i].toFixed(7)+'"><time>'+new Date(t[i]).toISOString()+'</time></trkpt>\n';
   return o+'</trkseg></trk>\n</gpx>\n';
 }
-function buildRecKML(){
-  let c='';for(let i=0;i<rec.n;i++)c+=rec.lon[i].toFixed(7)+','+rec.lat[i].toFixed(7)+',0 ';
-  return '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>'+esc(recName())+'</name>\n'
-   +'<Placemark><name>'+esc(recName())+'</name><Style><LineStyle><color>ffe0a300</color><width>4</width></LineStyle></Style>'
+function kmlOf(name,lat,lon,n){
+  let c='';for(let i=0;i<n;i++)c+=lon[i].toFixed(7)+','+lat[i].toFixed(7)+',0 ';
+  return '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>'+esc(name)+'</name>\n'
+   +'<Placemark><name>'+esc(name)+'</name><Style><LineStyle><color>ffe0a300</color><width>4</width></LineStyle></Style>'
    +'<LineString><tessellate>1</tessellate><coordinates>'+c.trim()+'</coordinates></LineString></Placemark></Document></kml>\n';
 }
+const buildRecGPX=()=>gpxOf(recName(),rec.lat,rec.lon,rec.t,rec.n);
+const buildRecKML=()=>kmlOf(recName(),rec.lat,rec.lon,rec.n);
 function download(blob,fname,done){
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fname;
   document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},4000);done();
@@ -932,17 +962,25 @@ let dbp=null;
 function db(){
   if(!dbp)dbp=new Promise((res,rej)=>{
     try{
-      const q=indexedDB.open('guidegpx',1);
-      q.onupgradeneeded=()=>q.result.createObjectStore('routes',{keyPath:'id'});
+      const q=indexedDB.open('guidegpx',2);
+      q.onupgradeneeded=()=>{const d=q.result;
+        for(const n of ['routes','trips','tripPts'])if(!d.objectStoreNames.contains(n))d.createObjectStore(n,{keyPath:'id'});};
       q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error);
     }catch(e){rej(e);}
   });
   return dbp;
 }
-async function dbDo(mode,fn){
+async function dbMulti(stores,fn){
   const d=await db();
   return new Promise((res,rej)=>{
-    const tx=d.transaction('routes',mode),rq=fn(tx.objectStore('routes'));
+    const tx=d.transaction(stores,'readwrite');fn(tx);
+    tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error);
+  });
+}
+async function dbDo(mode,fn,store='routes'){
+  const d=await db();
+  return new Promise((res,rej)=>{
+    const tx=d.transaction(store,mode),rq=fn(tx.objectStore(store));
     tx.oncomplete=()=>res(rq&&rq.result);tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error);
   });
 }
@@ -972,7 +1010,7 @@ async function restoreRoutes(){
   }catch(e){}
 }
 /* ============ Ronds-points (OpenStreetMap, via Overpass) ============ */
-const RB_V=1,RB_MARGIN=14,APP_V='v10 (3 nov.)';let RB_HEDGE=4000,RB_DEADLINE=120000,RB_TMO=25000,RB_PING_MS=12000,rbPingRes=null;const rbLog=[];let rbFailAt=0;
+const RB_V=1,RB_MARGIN=14,APP_V='v11 (5 nov.)';let RB_HEDGE=4000,RB_DEADLINE=120000,RB_TMO=25000,RB_PING_MS=12000,rbPingRes=null;const rbLog=[];let rbFailAt=0;
 const OVERPASS=['https://overpass-api.de/api/interpreter','https://z.overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter',
   'https://overpass.openstreetmap.fr/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
 const DRIVE=new Set(['motorway','motorway_link','trunk','trunk_link','primary','primary_link','secondary','secondary_link',
@@ -1258,6 +1296,7 @@ function saveOsm(rt){
 }
 function rbLine(rt){
   const b=rt&&rt.rb;if(!b||!b.state)return '';
+  if(b.state==='queued')return ' · ronds-points : en attente…';
   if(b.state==='loading')return ' · ronds-points : recherche'+(b.total?' ('+(b.step||'zones')+' '+b.done+'/'+b.total+')':'')+(b.used?' · '+b.used+' repéré'+(b.used>1?'s':''):'')+'…';
   if(b.state==='error')return ' · ronds-points : indisponibles';
   const u=b.used||0;
@@ -1267,9 +1306,16 @@ function refreshRb(rt){
   if(R===rt&&!st.guiding)updateHud();
   if(R===rt&&!$('rbSheet').hidden)renderRbSheet();
 }
-async function rbStart(rt,quiet){
-  rt.rb=Object.assign(rt.rb||{},{state:'loading',msg:'',found:0,used:0,bad:0,total:0,done:0,cache:false});
+let rbQueue=Promise.resolve();
+function rbStart(rt,quiet){
+  rt.rb=Object.assign(rt.rb||{},{state:'queued',msg:'',found:0,used:0,bad:0,total:0,done:0,cache:false});
   refreshRb(rt);
+  rbQueue=rbQueue.then(()=>rbRun(rt,quiet)).catch(()=>{});
+  return rbQueue;
+}
+async function rbRun(rt,quiet){
+  if(!routes.includes(rt))return;
+  rt.rb.state='loading';refreshRb(rt);
   try{
     const res=await fetchRings(rt,(done,total,rings,step)=>{
       if(!routes.includes(rt))return;
@@ -1297,7 +1343,7 @@ async function rbStart(rt,quiet){
 function rbReport(rt){
   if(!rt)return 'Aucun tracé chargé.';
   const b=rt.rb||{},L=['Guide GPX '+APP_V,'Tracé : '+rt.name+' ('+fmtKm(rt.total)+', '+rt.N+' points)'];
-  const lab={loading:'recherche en cours ('+(b.step||'zones')+' '+(b.done||0)+'/'+(b.total||'?')+')…',error:'ÉCHEC : '+(b.msg||'inconnu'),
+  const lab={queued:'en attente (un tracé à la fois)…',loading:'recherche en cours ('+(b.step||'zones')+' '+(b.done||0)+'/'+(b.total||'?')+')…',error:'ÉCHEC : '+(b.msg||'inconnu'),
     ok:'terminée'+(b.cache?' (données mémorisées)':''),partial:'INCOMPLÈTE ('+b.bad+'/'+b.total+' requêtes en échec : '+(b.msg||'?')+')'};
   L.push('Recherche : '+(b.state?lab[b.state]:'pas encore lancée'));
   if(b.state==='ok'||b.state==='partial'){
@@ -1343,19 +1389,122 @@ function drawRb(S,cx,cy,ay){                                      // numéro de 
   }
   ctx.textBaseline='alphabetic';
 }
+/* ============ Trajets réalisés (mémorisés automatiquement) ============ */
+const routeKey=rt=>rt.name+'|'+Math.round(rt.total/10);               // reconnaît un tracé même réimporté
+const routeDone=rt=>trips.some(t=>t.rkey===routeKey(rt)&&t.completed&&!t.sim);
+const trkName=t=>(t.sim?'Trajet simulé':'Trajet réalisé')+(t.routeName?' – '+t.routeName:'');
+let tripChain=Promise.resolve(),tripWarn=0,curTrip=null;
+function upsertTrip(m){
+  const i=trips.findIndex(x=>x.id===m.id);
+  if(i>=0)trips[i]=m;else trips.push(m);
+  trips.sort((a,b)=>b.t0-a.t0);
+  renderChips();updateTools();
+  if(!$('tripsSheet').hidden)renderTrips();
+}
+function persistTrip(){
+  const r=rec;
+  if(!r.id||r.n<2)return;
+  r.lastSave=Date.now();r.savedN=r.n;
+  const meta={id:r.id,rkey:r.rkey,routeName:r.rname,t0:r.t[0],t1:r.t[r.n-1],dist:Math.round(r.dist),n:r.n,completed:!!r.completed,sim:!!r.sim};
+  const pts={id:r.id,lat:Float64Array.from(r.lat),lon:Float64Array.from(r.lon),t:Float64Array.from(r.t)};   // copie figée du trajet à cet instant
+  tripChain=tripChain
+    .then(()=>dbMulti(['trips','tripPts'],tx=>{tx.objectStore('trips').put(meta);tx.objectStore('tripPts').put(pts);}))
+    .then(()=>upsertTrip(meta))
+    .catch(()=>{if(Date.now()-tripWarn>60000){tripWarn=Date.now();toast('Impossible de mémoriser le trajet sur cet appareil (stockage refusé ou plein). Utilisez « Sauvegarder » pour l’exporter.',8000);}});
+  return tripChain;
+}
+async function restoreTrips(){
+  try{
+    const all=await dbDo('readonly',s=>s.getAll(),'trips');
+    if(all&&all.length)trips=all.sort((a,b)=>b.t0-a.t0);
+    renderChips();updateTools();
+  }catch(e){}
+}
+const hideOnLeave=()=>{if(rec.id&&rec.n>=2&&rec.n>rec.savedN)persistTrip();};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')hideOnLeave();});
+window.addEventListener('pagehide',hideOnLeave);
+const fmtDate=t=>new Date(t).toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+function renderTrips(){
+  const box=$('tripsList');box.textContent='';
+  if(!trips.length){
+    const p=document.createElement('p');p.className='empty';
+    p.textContent='Aucun trajet pour l’instant. Chaque guidage est enregistré automatiquement dès que vous avancez.';box.appendChild(p);
+  }
+  for(const t of trips){
+    const b=document.createElement('button'),n=document.createElement('span'),d=document.createElement('span');
+    b.className='place';d.className='dist';
+    n.textContent=(t.completed&&!t.sim?'✓ ':'')+(t.routeName||'Trajet')+' · '+fmtDate(t.t0)+(t.sim?' · simulation':'')+(!t.completed&&!t.sim?' · non terminé':'');
+    d.textContent=fmtKm(t.dist);
+    b.append(n,d);b.onclick=()=>openTrip(t.id);box.appendChild(b);
+  }
+  $('tripsHide').hidden=!shown.size;
+}
+function openTrip(id){
+  const t=trips.find(x=>x.id===id);if(!t)return;
+  curTrip=t;
+  const mn=Math.max(1,Math.round((t.t1-t.t0)/60000));
+  $('tripTitle').textContent=(t.routeName||'Trajet')+(t.sim?' (simulation)':'');
+  $('tripInfo').textContent=fmtDate(t.t0)+' → '+new Date(t.t1).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})
+    +'\n'+fmtKm(t.dist)+' parcourus en '+fmtDur(mn*60)+'\n'+(t.sim?'Simulation':t.completed?'Tracé terminé jusqu’à l’arrivée':'Arrêté avant l’arrivée')
+    +(app.classList.contains('vide')?'\nChargez un fichier pour afficher ce trajet sur la carte.':'');
+  $('tripShow').textContent=shown.has(id)?'Masquer de la carte':'Afficher sur la carte';
+  $('tripShow').hidden=app.classList.contains('vide');
+  $('tripsSheet').hidden=true;$('tripSheet').hidden=false;
+}
+function openTrips(){renderTrips();$('tripSheet').hidden=true;$('tripsSheet').hidden=false;}
+async function loadTripPts(id){return dbDo('readonly',s=>s.get(id),'tripPts');}
+async function toggleTripOnMap(){
+  const t=curTrip;if(!t)return;
+  if(shown.has(t.id)){shown.delete(t.id);$('tripSheet').hidden=true;kick();return;}
+  let p=null;try{p=await loadTripPts(t.id);}catch(e){}
+  if(!p||!p.lat||p.lat.length<2){toast('Les points de ce trajet sont introuvables.');return;}
+  const n=p.lat.length,mx=new Float64Array(n),my=new Float64Array(n);
+  let x0=1,y0=1,x1=0,y1=0;
+  for(let i=0;i<n;i++){mx[i]=mercX(p.lon[i]);my[i]=mercY(p.lat[i]);
+    if(mx[i]<x0)x0=mx[i];if(mx[i]>x1)x1=mx[i];if(my[i]<y0)y0=my[i];if(my[i]>y1)y1=my[i];}
+  if(shown.size>=MAXR)shown.delete(shown.keys().next().value);
+  shown.set(t.id,{mx,my,n});
+  cam.mx=(x0+x1)/2;cam.my=(y0+y1)/2;
+  const z=Math.log2(Math.min((vw*0.82)/(Math.max(x1-x0,1e-7)*256),(vh*0.42)/(Math.max(y1-y0,1e-7)*256)));
+  zoomT=zoomDisp=Math.max(2,Math.min(17.5,z));rotDisp=0;follow=false;autoZoom=false;
+  $('tripSheet').hidden=true;updateTools();kick();
+}
+async function exportTrip(kind){
+  const t=curTrip;if(!t)return;
+  let p=null;try{p=await loadTripPts(t.id);}catch(e){}
+  if(!p||!p.lat||p.lat.length<2){toast('Les points de ce trajet sont introuvables.');return;}
+  const n=p.lat.length,fname='trajet-'+stamp(t.t0)+'.'+kind;
+  deliver(kind==='gpx'?gpxOf(trkName(t),p.lat,p.lon,p.t,n):kmlOf(trkName(t),p.lat,p.lon,n),
+    kind==='gpx'?'application/gpx+xml':'application/vnd.google-earth.kml+xml',fname,()=>toast('Trajet exporté : '+fname));
+}
+async function deleteTrip(){
+  const t=curTrip;if(!t||!confirm('Supprimer ce trajet ? Cette action est définitive.'))return;
+  try{await dbMulti(['trips','tripPts'],tx=>{tx.objectStore('trips').delete(t.id);tx.objectStore('tripPts').delete(t.id);});}
+  catch(e){toast('Suppression impossible.');return;}
+  trips=trips.filter(x=>x.id!==t.id);shown.delete(t.id);curTrip=null;
+  renderChips();updateTools();kick();openTrips();
+}
+$('btnTrips').onclick=openTrips;$('btnTripsW').onclick=openTrips;
+$('tripsClose').onclick=()=>{$('tripsSheet').hidden=true;};
+$('tripsHide').onclick=()=>{shown.clear();renderTrips();kick();};
+$('tripBack').onclick=openTrips;
+$('tripShow').onclick=toggleTripOnMap;
+$('tripGpx').onclick=()=>exportTrip('gpx');$('tripKml').onclick=()=>exportTrip('kml');
+$('tripDel').onclick=deleteTrip;
+
 function renderChips(){
   const box=$('routes');box.textContent='';
   routes.forEach((q,i)=>{
     const c=document.createElement('div');c.className='chip';c.style.setProperty('--c',q.color);
     c.setAttribute('aria-current',String(q===R));
     const b=document.createElement('button'),dot=document.createElement('i'),nm=document.createElement('span');
-    b.className='sel';nm.textContent=q.name;b.append(dot,nm);b.onclick=()=>activate(i);
+    b.className='sel';nm.textContent=(routeDone(q)?'✓ ':'')+q.name;b.append(dot,nm);b.onclick=()=>activate(i);
     const x=document.createElement('button');x.className='x';x.textContent='×';x.setAttribute('aria-label','Retirer '+q.name);x.onclick=()=>removeRoute(i);
     c.append(b,x);box.appendChild(c);
   });
 }
 function addRoute(r,pref){
-  if(routes.length>=MAXR){toast('3 fichiers au maximum : retirez-en un d’abord.',5000);return false;}
+  if(routes.length>=MAXR){toast(MAXR+' fichiers au maximum : retirez-en un d’abord.',5000);return false;}
   r.color=(pref&&COLORS.includes(pref)&&!routes.some(x=>x.color===pref))?pref:COLORS.find(c=>!routes.some(x=>x.color===c));
   routes.push(r);
   if(!R){R=r;st=fresh();mk.on=false;}
@@ -1387,7 +1536,7 @@ async function loadFiles(list){
       if(addRoute(r)){putRoute(r);rbStart(r);msgs.push(r.name+' : '+fmtKm(r.total)+', '+(r.mans.length-1)+' virage'+(r.mans.length>2?'s':''));}
     }catch(err){msgs.push(f.name+' : '+(err.message||'fichier illisible'));}
   }
-  if(skipped)msgs.push('3 fichiers au maximum : '+skipped+' ignoré'+(skipped>1?'s':'')+'.');
+  if(skipped)msgs.push(MAXR+' fichiers au maximum : '+skipped+' ignoré'+(skipped>1?'s':'')+'.');
   if(msgs.length)toast(msgs.join('\n'),skipped||msgs.length>1?7000:4500);
 }
 $('file').addEventListener('change',async e=>{const fl=e.target.files;if(fl&&fl.length)await loadFiles(fl);e.target.value='';});
@@ -1534,8 +1683,8 @@ document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{
 
 window.addEventListener('resize',resize);
 darkMQ.addEventListener&&darkMQ.addEventListener('change',()=>kick());
-resize();updateTools();restoreRoutes();
-window.__guide={get st(){return st;},get R(){return R;},get rec(){return rec;},get routes(){return routes;},get markers(){return markers;},
+resize();updateTools();restoreRoutes();restoreTrips();
+window.__guide={get st(){return st;},get R(){return R;},get rec(){return rec;},get routes(){return routes;},get markers(){return markers;},get trips(){return trips;},get shown(){return shown;},persistTrip,
   rb:{osmRings,applyRings,rbPassages,rbReport,rbStart,rbBoxes,rbQuery1,rbQuery2,rbPing,setHedge:v=>{RB_HEDGE=v;},setTimeouts:(a,b)=>{RB_TMO=a;RB_PING_MS=b;}},onFix,startGuiding,stopGuiding,buildRecGPX,buildRecKML,parseTrack,loadFiles,activate,removeRoute,addMarker,
   toScreen:(la,lo)=>{const S=256*Math.pow(2,zoomDisp);return w2s(mercX(lo),mercY(la),S,cam.mx*S,cam.my*S,anchorY());}};  // pratique pour déboguer
 })();
